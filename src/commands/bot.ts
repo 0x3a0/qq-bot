@@ -11,7 +11,13 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describeError, type Logger } from '../logger.js';
-import { formatQuoteTime, formatTurnover } from '../market/format.js';
+import {
+  formatBlockRanking,
+  formatQuoteTime,
+  formatRankingFooter,
+  formatRankingTitle,
+  formatTurnover,
+} from '../market/format.js';
 import type { MarketProvider } from '../market/types.js';
 import { MAX_TOP_BLOCKS, takeTopBlocks } from '../market/eastmoney.js';
 import { renderPng } from '../render/image.js';
@@ -215,6 +221,26 @@ export class GroupMessageHandler {
         fileType: 1,
       });
 
+      // 先发文字榜单，再发图片：两次回复使用递增的 msg_seq（平台要求不同序号）
+      const ranking = formatBlockRanking(top, {
+        title: formatRankingTitle(top.length),
+        footer: formatRankingFooter({
+          source: snapshot.source,
+          quoteTime: snapshot.quoteTime,
+          fetchedAt: snapshot.fetchedAt,
+          ...(this.deps.now ? { now: this.deps.now() } : {}),
+        }),
+      });
+
+      const textSent = await this.replyText(message, ranking);
+      if (textSent === 'reply-limit') {
+        logger.error('被动回复次数已用尽，文字榜单未发送，跳过图片发送');
+        return 'reply-limit';
+      }
+      if (textSent !== 'text-sent') {
+        logger.warn('文字榜单发送失败，继续尝试发送图片');
+      }
+
       const sent = await this.sendWithSeq(message, (seq) =>
         api.sendGroupImage({
           groupOpenid: message.groupOpenid,
@@ -234,13 +260,14 @@ export class GroupMessageHandler {
       }
 
       if (sent.seq === null) {
-        // 被动回复次数已用尽，无法再补发文字
-        logger.error('被动回复次数已用尽，图片与兜底文案都未发送');
+        // 被动回复次数已用尽：文字榜单已发出，用户至少能看到数据
+        logger.error('被动回复次数已用尽，图片未发送（文字榜单已送达）');
         return 'reply-limit';
       }
 
-      const textOutcome = await this.replyText(message, await this.buildFallbackText(sent.error));
-      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
+      // 文字榜单已经在前面发过了，这里只补一句失败说明
+      await this.replyText(message, await this.buildFallbackText(sent.error));
+      return 'fallback-sent';
     } catch (error) {
       logger.error(`生成或发送行情图片失败：${describeError(error)}`);
       const textOutcome = await this.replyText(message, await this.buildFallbackText(error));

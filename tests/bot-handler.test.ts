@@ -94,20 +94,38 @@ afterEach(async () => {
 });
 
 describe('GroupMessageHandler', () => {
-  it('大盘指令：上传图片并以 msg_type=7 被动回复（msg_seq=1）', async () => {
+  it('★ 大盘指令：先发文字 TOP30 榜单，再发图片（msg_seq 递增）', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     const outcome = await handler.handle(message);
 
     expect(outcome).toBe('image-sent');
     expect(calls.uploads).toHaveLength(1);
     expect(calls.images).toHaveLength(1);
-    expect(calls.texts).toHaveLength(0);
+    // 先文字、后图片
+    expect(calls.texts).toHaveLength(1);
+
+    const textCall = calls.texts[0] as { content: string; msgSeq: number };
+    expect(textCall.msgSeq).toBe(1);
+    expect(textCall.content).toContain('行业板块成交额 TOP30');
+    expect(textCall.content).toContain(' 1. 板块0 +1.50%');
+    expect(textCall.content).toContain('30. 板块29');
+    expect(textCall.content.split('\n').filter((line) => /^\s*\d+\. /.test(line))).toHaveLength(30);
 
     const imageCall = calls.images[0] as { fileInfo: string; msgId: string; msgSeq: number; groupOpenid: string };
     expect(imageCall.fileInfo).toBe('FILE_INFO_1');
     expect(imageCall.msgId).toBe('ROBOT1.0_msg');
-    expect(imageCall.msgSeq).toBe(1);
+    expect(imageCall.msgSeq).toBe(2);
     expect(imageCall.groupOpenid).toBe('GROUP_OPENID');
+  });
+
+  it('文字榜单内容按成交额降序且带涨跌幅与成交额', async () => {
+    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
+    await handler.handle(message);
+    const lines = (calls.texts[0] as { content: string }).content.split('\n');
+    // 第 1 名成交额 35e9 = 350亿，第 2 名 34e9 = 340亿
+    expect(lines.find((line) => line.startsWith(' 1. '))).toBe(' 1. 板块0 +1.50% 350亿');
+    expect(lines.find((line) => line.startsWith(' 2. '))).toBe(' 2. 板块1 -1.20% 340亿');
+    expect(lines.find((line) => line.startsWith('30. '))).toBe('30. 板块29 -1.20% 60亿');
   });
 
   it('上传时使用 file_type=1（图片）', async () => {
@@ -230,9 +248,10 @@ describe('GroupMessageHandler', () => {
     expect(await handler.handle(message)).toBe('image-sent');
     expect(sendGroupImage).toHaveBeenCalledTimes(2);
     const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
-    // 关键：重试必须换 seq，不能沿用被平台判重的那个
-    expect(seqs).toEqual([1, 2]);
-    expect(calls.texts).toHaveLength(0);
+    // 文字榜单占用 seq=1，图片从 seq=2 开始；重试必须换 seq，不能沿用被平台判重的那个
+    expect(seqs).toEqual([2, 3]);
+    // 只发了文字榜单（seq=1），没有额外的兜底文案
+    expect(calls.texts).toHaveLength(1);
   });
 
   it('★ 连续判重时持续换 seq，用尽后放弃且不再补发文字', async () => {
@@ -254,9 +273,10 @@ describe('GroupMessageHandler', () => {
 
     expect(await handler.handle(message)).toBe('reply-limit');
     const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
-    expect(seqs).toEqual([1, 2, 3, 4]);
+    // seq=1 被文字榜单占用，图片可用 2..5，用尽后放弃
+    expect(seqs).toEqual([2, 3, 4, 5]);
     // 序号用尽后不能再发文字，否则会撞上平台「被动回复次数超限」
-    expect(calls.texts).toHaveLength(0);
+    expect(calls.texts).toHaveLength(1);
   });
 
   it('★ 上传失败时用文字兜底，且不重复占用同一 msg_seq', async () => {
@@ -298,8 +318,8 @@ describe('GroupMessageHandler', () => {
     expect(await handler.handle(sameId)).toBe('image-sent');
 
     const seqs = calls.images.map((call) => (call as { msgSeq: number }).msgSeq);
-    // 关键：两次回复必须用不同 seq，否则平台返回 40054005 消息被去重
-    expect(seqs).toEqual([1, 2]);
+    // 每次回复两条（文字+图片）：第 1 次用 1/2，第 2 次用 3/4
+    expect(seqs).toEqual([2, 4]);
   });
 
   it('文字回复也失败时不抛出致命异常', async () => {

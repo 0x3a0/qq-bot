@@ -8,8 +8,11 @@ import {
   takeTopBlocks,
 } from '../src/market/eastmoney.js';
 import {
+  formatBlockRanking,
   formatChangePercent,
   formatQuoteTime,
+  formatRankingFooter,
+  formatRankingTitle,
   formatSnapshotSubtitle,
   formatTurnover,
   isPreviousTradingDay,
@@ -224,7 +227,8 @@ describe('MemoryCache', () => {
 
 describe('format 工具', () => {
   it('成交额格式化', () => {
-    expect(formatTurnover(9.87e10)).toBe('987.0亿');
+    expect(formatTurnover(9.87e10)).toBe('987亿');
+    expect(formatTurnover(9.876e10)).toBe('987.6亿');
     expect(formatTurnover(1.5e12)).toBe('15000亿');
     expect(formatTurnover(3.2e7)).toBe('3200万');
     expect(formatTurnover(0)).toBe('-');
@@ -288,5 +292,71 @@ describe('format 工具', () => {
       { code: 'd', name: 'd', changePercent: 2, turnover: 1, quoteTimestamp: null },
     ]);
     expect(stats).toEqual({ up: 2, down: 1, flat: 1 });
+  });
+});
+
+describe('formatBlockRanking（图片前的文字榜单）', () => {
+  const snapshotBlocks = [
+    { code: 'BK1', name: '电子', changePercent: -1.1, turnover: 4.886e11, quoteTimestamp: 1 },
+    { code: 'BK2', name: '半导体', changePercent: 3.28, turnover: 2.1e11, quoteTimestamp: 1 },
+  ];
+
+  it('生成「序号. 名称 涨跌幅 成交额」格式', () => {
+    const text = formatBlockRanking(snapshotBlocks, {
+      title: formatRankingTitle(2),
+      footer: formatRankingFooter({
+        source: '东方财富',
+        quoteTime: new Date('2026-09-11T07:39:00Z'),
+        fetchedAt: new Date('2026-09-12T08:00:00Z'),
+        now: new Date('2026-09-12T08:00:00Z'),
+      }),
+    });
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('行业板块成交额 TOP2');
+    expect(lines[1]).toBe(' 1. 电子 -1.10% 4886亿');
+    expect(lines[2]).toBe(' 2. 半导体 +3.28% 2100亿');
+    // 非今日行情，落款带完整日期
+    expect(lines[3]).toBe('东方财富 · 行情时间 2026-09-11 15:39');
+  });
+
+  it('序号两位对齐（第 10 行起不再多一个空格）', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      code: `BK${i}`,
+      name: `板块${i}`,
+      changePercent: 1,
+      turnover: (12 - i) * 1e10,
+      quoteTimestamp: null,
+    }));
+    const lines = formatBlockRanking(many).split('\n');
+    // turnover = (12 - i) * 1e10 元 -> 1200亿 … 100亿
+    expect(lines[0]).toBe(' 1. 板块0 +1.00% 1200亿');
+    expect(lines[9]).toBe('10. 板块9 +1.00% 300亿');
+    expect(lines[11]).toBe('12. 板块11 +1.00% 100亿');
+  });
+
+  it('不传标题与落款时只有榜单行', () => {
+    const lines = formatBlockRanking(snapshotBlocks).split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^\s*1\. /);
+  });
+
+  it('30 行榜单的字符长度远小于平台文本上限', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      code: `BK${i}`,
+      name: '通信网络设备及器件',
+      changePercent: -12.34,
+      turnover: 1.234e11,
+      quoteTimestamp: null,
+    }));
+    const text = formatBlockRanking(many, {
+      title: formatRankingTitle(30),
+      footer: formatRankingFooter({
+        source: '东方财富',
+        quoteTime: new Date(),
+        fetchedAt: new Date(),
+      }),
+    });
+    expect(text.split('\n')).toHaveLength(32);
+    expect(text.length).toBeLessThan(2000);
   });
 });

@@ -32,7 +32,9 @@ export function formatTurnover(turnover: number): string {
   if (!Number.isFinite(turnover) || turnover <= 0) return '-';
   if (turnover >= 1e8) {
     const yi = turnover / 1e8;
-    return `${yi >= 1000 ? yi.toFixed(0) : yi.toFixed(1)}亿`;
+    if (yi >= 1000) return `${yi.toFixed(0)}亿`;
+    // 整数时不留 `.0`，文字榜单里更紧凑易读
+    return `${Number.isInteger(Number(yi.toFixed(1))) ? yi.toFixed(0) : yi.toFixed(1)}亿`;
   }
   if (turnover >= 1e4) return `${(turnover / 1e4).toFixed(0)}万`;
   return turnover.toFixed(0);
@@ -85,4 +87,48 @@ export function summarizeBlocks(blocks: MarketBlock[]): { up: number; down: numb
     else flat += 1;
   }
   return { up, down, flat };
+}
+
+/**
+ * 生成成交额 TOP N 的文字榜单，用于在图片之前先发一条文本数据。
+ * 单行格式：`序号. 板块名 涨跌幅 成交额`，例如：
+ * ` 1. 电子 -1.10% 4886亿`
+ * 每行约占 20 个字符，30 行总额远小于平台文本上限。
+ */
+export function formatBlockRanking(
+  blocks: MarketBlock[],
+  options: { title?: string; footer?: string } = {},
+): string {
+  const lines = blocks.map((block, index) => {
+    const rank = String(index + 1).padStart(2, ' ');
+    return `${rank}. ${block.name} ${formatChangePercent(block.changePercent)} ${formatTurnover(block.turnover)}`;
+  });
+
+  const content = [options.title, ...lines, options.footer].filter(
+    (line): line is string => typeof line === 'string' && line.length > 0,
+  );
+  return content.join('\n');
+}
+
+/** 文字榜单的标题，例如「行业板块成交额 TOP30」。 */
+export function formatRankingTitle(blockCount: number): string {
+  return `行业板块成交额 TOP${blockCount}`;
+}
+
+/** 文字榜单的落款，例如「东方财富 · 行情时间 09-11 15:39」。 */
+export function formatRankingFooter(params: {
+  source: string;
+  quoteTime: Date | null;
+  fetchedAt: Date;
+  now?: Date;
+}): string {
+  const now = params.now ?? new Date();
+  const time = params.quoteTime ?? now;
+  const label = params.quoteTime ? '行情时间' : '抓取时间';
+  let timeText = formatQuoteTime(time);
+  if (params.quoteTime && isPreviousTradingDay(params.quoteTime, now)) {
+    const shifted = new Date(params.quoteTime.getTime() + SHANGHAI_OFFSET_MS);
+    timeText = `${shifted.getUTCFullYear()}-${timeText}`;
+  }
+  return `${params.source} · ${label} ${timeText}`;
 }
