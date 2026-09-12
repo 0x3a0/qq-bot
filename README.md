@@ -49,8 +49,12 @@ LOG_EVENTS=true            # 排查问题时打开，会打印收到的全部事
 | `@resvg/resvg-js` | SVG → PNG 渲染 |
 
 > 中文字体：程序会自动使用 `assets/fonts/` 下的自带字体（构建阶段由
-> `scripts/fetch-font.mjs` 下载 Noto Sans SC 并校验 SHA-256）。
+> `scripts/fetch-font.mjs` 下载 Noto Sans SC 的 **Regular + Bold 静态字重**并校验 SHA-256）。
 > 也可用 `FONT_FILES` 指向任意已有中文字体。
+>
+> ⚠️ 不要改回可变字体（VF）：resvg 不支持 `wght` 轴，只会用默认实例，
+> `font-weight` 会被静默忽略，字迹会变得极细（看起来像「模糊」）。
+> 详见 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) 第四节。
 
 ## 验证与启动
 

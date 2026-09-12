@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 import { checkFontSupport, reportFontSupport } from '../src/render/font-check.js';
 import { createLogger } from '../src/logger.js';
 
@@ -45,7 +46,7 @@ describe('字体健康检查', () => {
 
   it('★ 使用自带字体时日志说明来源为「自带字体」', () => {
     const spy = spyLogger();
-    const ok = reportFontSupport(spy.log, { fontFiles: ['assets/fonts/NotoSansSC-Regular.ttf'] });
+    const ok = reportFontSupport(spy.log, { fontFiles: [join('assets', 'fonts', 'NotoSansSC-Regular.otf')] });
     if (ok) {
       expect(spy.info.some((line) => line.includes('自带字体'))).toBe(true);
     } else {

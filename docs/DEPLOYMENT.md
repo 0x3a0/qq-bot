@@ -60,7 +60,7 @@ Render 免费 Web 实例在 15 分钟内既没有 HTTP 请求、也没有收到 
 
 ```text
 [INFO] [app] 未找到 .env，使用进程内环境变量      ← 容器里正常
-[INFO] [app] 字体检查通过（探针 2531B），使用自带字体（1 个文件）
+[INFO] [app] 字体检查通过（探针 2531B），使用自带字体（2 个文件）
 [INFO] [app] 已监听 PORT=10000，仅提供 /health 健康检查（平台就绪判据）
 [INFO] [app:gateway] Gateway 鉴权成功 READY，session_id=…，机器人=…
 [INFO] [app] 现在可以在测试群里 @机器人 发送「大盘」或「ping」
@@ -75,24 +75,43 @@ Render 的原生运行时是 **Debian 12，不带任何中文字体**（官方�
 
 现已自动化，通常无需任何配置：
 
-1. **构建阶段**自动下载 Noto Sans SC（OFL-1.1）到 `assets/fonts/` 并校验 SHA-256
-   （`scripts/fetch-font.mjs`，由 `prebuild` 触发）。字体 17MB，因此不入库。
-2. **运行时**自动发现并使用它（`detectBundledFonts()`），无需手动设 `FONT_FILES`。
+1. **构建阶段**自动下载 Noto Sans SC 的 **Regular + Bold 静态字重**（OFL-1.1）
+   到 `assets/fonts/` 并校验 SHA-256（`scripts/fetch-font.mjs`，由 `prebuild` 触发）。
+   两个字体合计约 16MB，因此不入库。
+2. **运行时**自动发现并使用它们（`detectBundledFonts()`），无需手动设 `FONT_FILES`。
+
+### ⚠️ 为什么必须下载两个静态字重（不要改回可变字体）
+
+resvg **不支持可变字体（VF）的 `wght` 轴**，只会使用字体文件的**默认实例**：
+
+- 如果只提供一个字体文件，SVG 里的 `font-weight`（标题 700、板块名 600）会被
+  **静默忽略**，全图退化成该文件默认实例的字重。
+- 实测：只给一个字体文件时，`font-weight` 取 100/400/600/700/900 渲染结果**逐字节相同**。
+- 早期版本下载的是 `NotoSansSC-VF.ttf`，而该子集可变字体的默认实例恰好是
+  **Thin（`usWeightClass=100`）**。结果就是全图文字变成发丝一样的极细笔画，
+  在深色底上看起来像「字体模糊 / 发虚」（实际是抗锯齿的正常结果，只是笔画太细了）。
+- 给到 **Regular+Bold 两个静态字体**后，resvg 才会按 `font-weight` 选取字面。
+  附带好处：静态字体比可变字体渲染快约 2.4 倍（实测 1200×900 出图 960ms → 398ms）。
+
+`tests/render-weight.test.ts` 把这些约束固化成了回归测试（校验字重、
+以及「700 的墨迹量显著多于 400」），改动字体来源时请确保它仍然通过。
 
 若构建日志出现 `[fetch-font] ⚠️ 字体下载失败`：
 
 ```bash
-# 换个更快的镜像重下（国内访问 GitHub 可能很慢，实测本机 17MB 用了 2 分钟）
-FONT_DOWNLOAD_URL=https://mirror.example.com/NotoSansSC-VF.ttf npm run fetch-font
+# 换个更快的镜像重下（国内访问 jsDelivr/GitHub 可能很慢）
+FONT_DOWNLOAD_URL=https://mirror.example.com/NotoSansSC-Regular.otf \
+FONT_DOWNLOAD_URL_BOLD=https://mirror.example.com/NotoSansSC-Bold.otf \
+npm run fetch-font
 
 # 或直接把字体文件放进 assets/fonts/，程序会自动识别
-# 或用 FONT_FILES 指向任意已有的中文字体
-FONT_FILES=/path/to/NotoSansSC-Regular.otf
+# 或用 FONT_FILES 指向任意已有的中文字体（同样建议给 Regular+Bold 两个静态字重）
+FONT_FILES=/path/to/NotoSansSC-Regular.otf,/path/to/NotoSansSC-Bold.otf
 ```
 
 > 上游字体若更新，SHA-256 校验会失败并给出明确提示（需同步改脚本里的期望值）。
 > **想要离线可构建**，可把字体文件提交进仓库（把 `assets/fonts/` 从 `.gitignore`
-> 移除），代价是仓库体积增加约 17MB。
+> 移除），代价是仓库体积增加约 16MB。
 
 ## 五、故障排查
 
@@ -100,6 +119,7 @@ FONT_FILES=/path/to/NotoSansSC-Regular.otf
 |---|---|
 | **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个实例同时连着同一机器人（平台会把同一条消息投递给每个连接）。三种可能：① 本地开了两个进程（程序有单实例保护会直接拒绝启动，锁文件在 `.tmp-probe/bot.lock`）；② 平台副本数 > 1；③ **零停机部署**——新旧实例会并存约 60 秒，需在平台设置里关闭 |
 | **图片中文显示为「框框」/ 有色块没文字** | 环境缺中文字体（resvg 静默失败，不报错）。看构建日志有无 `[fetch-font] ⚠️`；也可 `npm run fetch-font` 手动补下，或用 `FONT_FILES` 指向已有中文字体 |
+| **字体发虚 / 模糊 / 笔画极细** | 自带字体退回了可变字体（默认实例是 Thin），或只加载到单个字重导致 `font-weight` 失效。确认 `assets/fonts/` 下是 `NotoSansSC-Regular.otf` + `NotoSansSC-Bold.otf` 两个静态字体，且启动日志为「自带字体（2 个文件）」 |
 | **部署一段时间后机器人不响应，日志也停了** | Render 免费实例 15 分钟无流量会休眠。改用付费实例或 Background Worker |
 | 部署后立刻退出 | 多半是没配 `APP_ID` / `CLIENT_SECRET`（`.env` 不在仓库里）。日志会打印「配置校验失败」 |
 | Render 部署失败并提示未绑定端口 | Web Service 必须监听 `PORT`。程序会在检测到 `PORT` 时自动开一个仅含 `/health` 的监听；若日志报了端口监听失败，检查 `PORT` 是否被其他进程占用 |
@@ -137,7 +157,7 @@ FONT_FILES=/path/to/NotoSansSC-Regular.otf
 |---|---|---|
 | 资金流取数（行业 496 条 / 概念 504 条） | 1.8s / 5.7s | 各自 5~6 页串行请求，**单页延迟波动很大**（实测 110ms ~ 1.8s） |
 | treemap 布局 + 拼接 SVG | ~0ms | 纯计算，可忽略 |
-| PNG 渲染（每张） | 1.5 ~ 2.4s | 几乎全部是**中文字形处理**，见下 |
+| PNG 渲染（每张） | 0.4 ~ 0.9s | 几乎全部是**中文字形处理**，见下 |
 | 分片上传（约 105KB） | ~1.6s | 4 次 HTTPS 往返：prepare → PUT → part_finish → merge |
 | 发送富媒体消息 | ~1.2s | 平台侧转存图片 |
 
@@ -152,6 +172,9 @@ vs 约 7ms/英文节点），且字体库无法跨 `Resvg` 实例复用。已排
 - 把全部文本合并成单个 `<text>` + `<tspan>` **没有改善**（1324ms vs 1379ms，在噪声内）
 - 用 `<defs>` + `<use>` 复用文本节点 **没有改善**（每个板块名都不同，无法复用）
 - 显式用 `FONT_FILES` 指定字体（跳过系统字体扫描）约省 15%
+- ✅ **改用静态字重（Regular+Bold）而非可变字体**：约省 60%
+  （实测 960ms → 398ms）。可变字体每次都要按 `wght` 轴插值字形轮廓，
+  而 resvg 本来也不支持轴，属于纯浪费。见第四节。
 
 因此实现采用**内容级 PNG 缓存**：同一份行情数据只渲染一次，重复请求 0ms 命中
 （实测 `2238ms → 1ms`）。行情每 60 秒刷新，通常只有每个行情周期的首个请求付渲染成本。

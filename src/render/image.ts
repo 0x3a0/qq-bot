@@ -208,11 +208,16 @@ function renderLegend(params: { x: number; y: number; width: number }): string {
  *
  * 性能实测（1200x900、约 46 个中文文本节点）：
  * - treemap 布局 + 拼接 SVG           ~0ms
- * - new Resvg(...) + render + asPng   1500ms（进程内首次约 2500ms，含 JIT/字体预热）
+ * - new Resvg(...) + render + asPng   400~900ms（进程内首次更久，含 JIT/字体预热）
  * - 命中内容缓存                      0ms
- * 其中开销几乎全部来自中文字形处理（实测约 140ms/节点，纯英文节点约 7ms/个），
+ * 开销几乎全部来自中文字形处理（实测约 140ms/节点，纯英文节点约 7ms/个），
  * 且 resvg 的字体库无法跨实例复用，因此用「内容级 PNG 缓存」摊薄：
  * 同一份行情数据只渲染一次。
+ *
+ * ⚠️ 字体必须是**静态字重**（Regular+Bold，见 config.ts 的 BUNDLED_FONT_PAIR）：
+ * resvg 不支持可变字体的 wght 轴，只给一个字体文件时本函数里所有 font-weight
+ * 都会被静默忽略（历史上曾因此整张图退化成 Thin 极细体）。
+ * 换成静态字体后渲染约快 2.4 倍（960ms → 398ms），因为省掉了字形轮廓插值。
  */
 export function renderPng(options: RenderImageOptions): RenderedImage {
   const { svg, tiles, width, height } = renderSvg(options);
@@ -232,7 +237,7 @@ export function renderPng(options: RenderImageOptions): RenderedImage {
   if (cost > 500) {
     renderLogger.info(
       `本次渲染耗时 ${cost}ms（主要是中文字形处理，结果已缓存）；` +
-        '可用 FONT_FILES 显式指定中文字体以缩短耗时',
+        '可用 FONT_FILES 显式指定字体以跳过系统字体扫描',
     );
   }
 

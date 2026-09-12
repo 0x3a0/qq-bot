@@ -179,12 +179,39 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * 而 resvg 缺字形时只会画「框框」且不报错。`scripts/fetch-font.mjs` 会在
  * 构建时把 Noto Sans SC 放到 assets/fonts/，这里自动使用它，
  * 免去手动配置 FONT_FILES。
+ *
+ * ⚠️ 返回的字体必须是**静态字重**（Regular + Bold）。resvg 不支持可变字体的
+ * wght 轴：只给一个字体文件时，SVG 里的 font-weight（标题 700、板块名 600）
+ * 会被**静默忽略**，整张图退化成该文件默认实例的字重。
+ * 历史坑：`NotoSansSC-VF.ttf` 的默认实例是 Thin（usWeightClass=100），
+ * 于是所有文字都变成发丝一样的极细体，在深色底上看起来就是「模糊」。
  */
 export function detectBundledFonts(baseDir: string = process.cwd()): string[] {
-  return BUNDLED_FONT_CANDIDATES.map((relative) => resolve(baseDir, relative)).filter((file) => existsSync(file));
+  const resolveAll = (relatives: readonly string[]): string[] =>
+    relatives.map((relative) => resolve(baseDir, relative)).filter((file) => existsSync(file));
+
+  // 首选：静态 Regular + Bold（resvg 才会按 font-weight 选到粗体）
+  const pair = resolveAll(BUNDLED_FONT_PAIR);
+  // 两个都在才采用；只有一个时不要用——resvg 单字体时忽略 font-weight，
+  // 会出现「标题和正文一样粗细」，不如走下面的兜底。
+  if (pair.length === BUNDLED_FONT_PAIR.length) return pair;
+
+  // 兜底：旧的可变字体（默认字重非 Regular，属于已知的次优解）
+  return resolveAll(BUNDLED_FONT_CANDIDATES);
 }
 
-/** 自带动体的候选路径（按优先级） */
+/**
+ * 自带字体的首选组合：静态 Regular + Bold。
+ *
+ * 两个都必须存在才会被采用——只加载其中一个会让 font-weight 失效
+ * （resvg 单字体时忽略字重），所以宁可退回下一组候选。
+ */
+export const BUNDLED_FONT_PAIR = [
+  'assets/fonts/NotoSansSC-Regular.otf',
+  'assets/fonts/NotoSansSC-Bold.otf',
+] as const;
+
+/** 兜底候选（旧命名，可变字体；按优先级排列） */
 export const BUNDLED_FONT_CANDIDATES = [
   'assets/fonts/NotoSansSC-Regular.ttf',
   'assets/fonts/NotoSansSC-VF.ttf',

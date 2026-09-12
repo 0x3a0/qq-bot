@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BUNDLED_FONT_CANDIDATES, detectBundledFonts, loadConfig } from '../src/config.js';
+import {
+  BUNDLED_FONT_CANDIDATES,
+  BUNDLED_FONT_PAIR,
+  detectBundledFonts,
+  loadConfig,
+} from '../src/config.js';
 
 const base = { APP_ID: '123456', CLIENT_SECRET: 'secret' };
 
@@ -16,25 +21,45 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** 在临时目录里造出若干字体文件。 */
+function touchFonts(relatives: readonly string[]): string[] {
+  mkdirSync(join(dir, 'assets', 'fonts'), { recursive: true });
+  return relatives.map((relative) => {
+    const file = join(dir, relative);
+    writeFileSync(file, 'fake-font');
+    return file;
+  });
+}
+
 describe('自带字体探测', () => {
   it('★ 没有 assets/fonts 时返回空数组（回退系统字体）', () => {
     expect(detectBundledFonts(dir)).toEqual([]);
   });
 
-  it('★ 存在自带字体时自动使用它（部署环境无需手动配 FONT_FILES）', () => {
-    const fontPath = join(dir, BUNDLED_FONT_CANDIDATES[0] as string);
-    mkdirSync(join(dir, 'assets', 'fonts'), { recursive: true });
-    writeFileSync(fontPath, 'fake-font');
-
-    expect(detectBundledFonts(dir)).toEqual([fontPath]);
+  it('★ 同时有静态 Regular 与 Bold 时两个都返回（resvg 靠它们选字重）', () => {
+    const files = touchFonts(BUNDLED_FONT_PAIR);
+    expect(detectBundledFonts(dir)).toEqual(files);
   });
 
-  it('支持候选路径中的任意一个（VVF 旧命名）', () => {
-    const altPath = join(dir, BUNDLED_FONT_CANDIDATES[1] as string);
-    mkdirSync(join(dir, 'assets', 'fonts'), { recursive: true });
-    writeFileSync(altPath, 'fake-font');
+  it('★ 只有静态 Regular 时不要用它（单字体下 font-weight 会失效）', () => {
+    touchFonts([BUNDLED_FONT_PAIR[0]]);
+    // 没有 Bold 就不满足「字重对」，此时应回退到兜底候选（这里为空）
+    expect(detectBundledFonts(dir)).toEqual([]);
+  });
 
-    expect(detectBundledFonts(dir)).toEqual([altPath]);
+  it('★ 只有静态 Bold 时同样不采用', () => {
+    touchFonts([BUNDLED_FONT_PAIR[1]]);
+    expect(detectBundledFonts(dir)).toEqual([]);
+  });
+
+  it('静态字重不全时回退到旧的可变字体候选', () => {
+    const files = touchFonts([BUNDLED_FONT_PAIR[0], BUNDLED_FONT_CANDIDATES[0] as string]);
+    expect(detectBundledFonts(dir)).toEqual([files[1]]);
+  });
+
+  it('支持兜底候选路径中的任意一个（旧 VF 命名）', () => {
+    const [alt] = touchFonts([BUNDLED_FONT_CANDIDATES[1] as string]);
+    expect(detectBundledFonts(dir)).toEqual([alt]);
   });
 
   it('显式配置的 FONT_FILES 优先于自带字体', () => {
