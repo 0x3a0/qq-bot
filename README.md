@@ -2,7 +2,7 @@
 
 群成员在 QQ 群里 `@机器人 大盘`，机器人被动回复一张 A 股行业板块 Treemap 热力图。
 
-技术方案见 [MVP_TECH_PLAN.md](./MVP_TECH_PLAN.md)，接口规格见 [docs/API_BAIDU_BLOCKS.md](./docs/API_BAIDU_BLOCKS.md)（历史调研）。
+技术方案见 [MVP_TECH_PLAN.md](./MVP_TECH_PLAN.md)。
 
 - 事件接入：QQ 机器人 API v2 · Gateway WebSocket · `GROUP_AT_MESSAGE_CREATE`
 - 行情数据：东方财富行业板块接口 `fs=m:90+t:2`
@@ -128,8 +128,6 @@ src/
 scripts/
   verify.ts            统一自检入口（market / render / qq / inbound / upload）
 tests/                 vitest 单元测试
-docs/
-  API_BAIDU_BLOCKS.md  历史调研：百度股市通板块接口实测记录（MVP 最终未采用）
 ```
 
 ## 开发命令
