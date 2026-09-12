@@ -54,7 +54,7 @@ export interface MarketSummaryOptions {
 
 /**
  * 生成图片头部的数据说明文字，例如：
- * 东方财富 · 行业板块成交额 TOP30 · 行情时间 15:00
+ * 东方财富 · 行业板块成交额 TOP25 · 行情时间 15:00
  *
  * 当行情时间不是今天时（周末/节假日/休市），在时间前带上完整日期（YYYY-MM-DD），
  * 避免把上一交易日的收盘数据误读成实时行情。
@@ -110,7 +110,7 @@ export function formatBlockRanking(
   return content.join('\n');
 }
 
-/** 文字榜单的标题，例如「行业板块成交额 TOP30」。 */
+/** 文字榜单的标题，例如「行业板块成交额 TOP25」。 */
 export function formatRankingTitle(blockCount: number): string {
   return `行业板块成交额 TOP${blockCount}`;
 }

@@ -180,12 +180,12 @@ describe('GroupMessageHandler', () => {
 
     expect(await handler.handle(message)).toBe('fallback-sent');
     expect(sentTexts).toHaveLength(2);
-    expect(sentTexts[0]).toContain('行业板块成交额 TOP30');
+    expect(sentTexts[0]).toContain('行业板块成交额 TOP25');
     expect(sentTexts[1]).toContain('图片生成失败');
-    expect(sentTexts[1]).not.toContain('行业板块成交额 TOP30');
+    expect(sentTexts[1]).not.toContain('行业板块成交额 TOP25');
   });
 
-  it('★ 大盘指令：先发文字 TOP30 榜单，再发图片（msg_seq 递增）', async () => {
+  it('★ 大盘指令：先发文字 TOP25 榜单，再发图片（msg_seq 递增）', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     const outcome = await handler.handle(message);
 
@@ -197,10 +197,10 @@ describe('GroupMessageHandler', () => {
 
     const textCall = calls.texts[0] as { content: string; msgSeq: number };
     expect(textCall.msgSeq).toBe(1);
-    expect(textCall.content).toContain('行业板块成交额 TOP30');
+    expect(textCall.content).toContain('行业板块成交额 TOP25');
     expect(textCall.content).toContain(' 1. 板块0 +1.50%');
-    expect(textCall.content).toContain('30. 板块29');
-    expect(textCall.content.split('\n').filter((line) => /^\s*\d+\. /.test(line))).toHaveLength(30);
+    expect(textCall.content).toContain('25. 板块24');
+    expect(textCall.content.split('\n').filter((line) => /^\s*\d+\. /.test(line))).toHaveLength(25);
 
     const imageCall = calls.images[0] as { fileInfo: string; msgId: string; msgSeq: number; groupOpenid: string };
     expect(imageCall.fileInfo).toBe('FILE_INFO_1');
@@ -213,10 +213,12 @@ describe('GroupMessageHandler', () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     await handler.handle(message);
     const lines = (calls.texts[0] as { content: string }).content.split('\n');
-    // 第 1 名成交额 35e9 = 350亿，第 2 名 34e9 = 340亿
+    // 第 1 名成交额 35e9 = 350亿，第 2 名 34e9 = 340亿；第 25 名 11e9 = 110亿
     expect(lines.find((line) => line.startsWith(' 1. '))).toBe(' 1. 板块0 +1.50% 350亿');
     expect(lines.find((line) => line.startsWith(' 2. '))).toBe(' 2. 板块1 -1.20% 340亿');
-    expect(lines.find((line) => line.startsWith('30. '))).toBe('30. 板块29 -1.20% 60亿');
+    expect(lines.find((line) => line.startsWith('25. '))).toBe('25. 板块24 +1.50% 110亿');
+    // 第 26 名不应出现在榜单里
+    expect(lines.find((line) => line.startsWith('26. '))).toBeUndefined();
   });
 
   it('上传时使用 file_type=1（图片）', async () => {
@@ -227,7 +229,7 @@ describe('GroupMessageHandler', () => {
     expect(uploadCall.fileName).toMatch(/\.png$/);
   });
 
-  it('渲染时只取成交额前 30 个板块', async () => {
+  it('渲染时只取成交额前 25 个板块', async () => {
     const renderer = vi.fn((_options: unknown) => ({
       png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       svg: '<svg/>',
@@ -241,7 +243,7 @@ describe('GroupMessageHandler', () => {
     });
     await handler.handle(message);
     const options = renderer.mock.calls[0]?.[0] as unknown as { blocks: MarketBlock[]; source: string };
-    expect(options.blocks).toHaveLength(30);
+    expect(options.blocks).toHaveLength(25);
     expect(options.source).toBe('东方财富');
   });
 
@@ -298,7 +300,7 @@ describe('GroupMessageHandler', () => {
     expect(calls.images).toHaveLength(0);
     expect(calls.texts).toHaveLength(1);
     expect(calls.texts[0]?.content).toContain('获取失败');
-    expect(calls.texts[0]?.content).not.toContain('TOP30');
+    expect(calls.texts[0]?.content).not.toContain('TOP25');
     expect(calls.texts[0]?.msgSeq).toBe(1);
   });
 
@@ -312,7 +314,7 @@ describe('GroupMessageHandler', () => {
     const outcome = await handler.handle(message);
     expect(outcome).toBe('fallback-sent');
     expect(calls.texts).toHaveLength(2);
-    expect(calls.texts[0]?.content).toContain('行业板块成交额 TOP30');
+    expect(calls.texts[0]?.content).toContain('行业板块成交额 TOP25');
     expect(calls.texts[1]?.content).toContain('图片生成失败');
     expect(calls.images).toHaveLength(0);
   });

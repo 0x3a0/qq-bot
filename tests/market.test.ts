@@ -90,15 +90,15 @@ describe('normalizeDiff', () => {
 });
 
 describe('takeTopBlocks', () => {
-  it('最多返回 30 个板块', () => {
+  it('最多返回 25 个板块', () => {
     const rows = Array.from({ length: 40 }, (_, index) => row(`BK${index}`, `板块${index}`, 1, (40 - index) * 1e9));
     const blocks = normalizeIndustryRows(rows);
     expect(blocks).toHaveLength(40);
-    expect(takeTopBlocks(blocks)).toHaveLength(30);
+    expect(takeTopBlocks(blocks)).toHaveLength(25);
     expect(takeTopBlocks(blocks)[0]?.code).toBe('BK0');
   });
 
-  it('不足 30 个时返回全部', () => {
+  it('不足 25 个时返回全部', () => {
     const blocks = normalizeIndustryRows([row('BK1', 'A', 1, 1e9)]);
     expect(takeTopBlocks(blocks)).toHaveLength(1);
   });
@@ -124,7 +124,7 @@ describe('EastmoneyIndustryProvider', () => {
     expect(snapshot.blocks[0]?.name).toBe('超大板块');
     expect(snapshot.source).toBe('东方财富');
     expect(snapshot.market).toBe('A股');
-    expect(takeTopBlocks(snapshot.blocks)).toHaveLength(30);
+    expect(takeTopBlocks(snapshot.blocks)).toHaveLength(25);
   });
 
   it('请求参数符合接口约定', async () => {
@@ -251,11 +251,11 @@ describe('format 工具', () => {
     const saturday = new Date('2026-09-12T08:00:00Z'); // 北京 16:00
     const fridayQuote = new Date(1789112372 * 1000); // 北京 2026-09-11 15:39
     const subtitle = formatSnapshotSubtitle(
-      { source: '东方财富', quoteTime: fridayQuote, fetchedAt: saturday, blockCount: 30 },
+      { source: '东方财富', quoteTime: fridayQuote, fetchedAt: saturday, blockCount: 25 },
       { now: saturday },
     );
     expect(subtitle).toContain('2026-09-11 15:39');
-    expect(subtitle).toContain('TOP30');
+    expect(subtitle).toContain('TOP25');
     // 不再使用「（非今日，上一交易日数据）」这类后缀
     expect(subtitle).not.toContain('上一交易日');
     expect(isPreviousTradingDay(fridayQuote, saturday)).toBe(true);
