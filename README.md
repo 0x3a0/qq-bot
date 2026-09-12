@@ -35,31 +35,36 @@ LOG_EVENTS=true            # 排查问题时打开，会打印收到的全部事
 
 ### 3. 分步验证
 
+所有自检统一走 `npm run verify -- <子命令>`：
+
 ```bash
-# 只验证行情取数与排序（不需要 QQ 凭据）
-npm run verify:market
+# 行情取数与排序（不需要 QQ 凭据）
+npm run verify -- market
 
 # 本地渲染一张真实数据的 PNG（不需要 QQ 凭据）
-npm run render:sample      # 输出 .tmp-probe/preview/market-sample.png
+npm run verify -- render        # 输出 .tmp-probe/preview/market-sample.png
 
-# 排查富媒体上传问题：逐步打印 prepare/PUT/part_finish/merge 的原始响应
-npx tsx scripts/diag-upload.ts <group_openid> [图片路径]
-
-# 验证 APP_ID / CLIENT_SECRET 与 Gateway 接入点（不发送消息）
-npm run verify:qq
+# 校验 APP_ID / CLIENT_SECRET 与 Gateway 接入点（不发送消息）
+npm run verify -- qq
 
 # ★ 验证能否正常收到 QQ 群用户的消息（只监听，不回复）
-npm run verify:inbound                # 默认等待 5 分钟
-npm run verify:inbound -- 60          # 等待 60 秒
-npm run verify:inbound -- 60 --reset  # 更换过机器人账号时，先清理会话缓存
+npm run verify -- inbound                # 默认等待 5 分钟
+npm run verify -- inbound 60             # 等待 60 秒
+npm run verify -- inbound 60 --reset     # 更换过机器人账号时，先清理会话缓存
+
+# 富媒体分片上传诊断（打印 prepare/PUT/part_finish/merge 各步骤原始结果）
+npm run verify -- upload <group_openid> [图片路径]
+
+# 一次跑完 market + render + qq
+npm run verify
 ```
 
-`verify:inbound` 会先打印当前 APP_ID、接入点、凭据对应的机器人昵称与 ID，
+`verify -- inbound` 会先打印当前 APP_ID、接入点、凭据对应的机器人昵称与 ID，
 再等待群 @ 事件。成功时会打印完整的 `GROUP_AT_MESSAGE_CREATE` 事件体
 （`msg_id`、`group_openid`、`member_openid`、`content` 等）。
 
 > 会话缓存说明：`.tmp-probe/gateway-session.json` 保存 Gateway 的 `session_id` 与 `seq`，
-> 用于进程重启后 Resume。缓存**绑定 AppID 与接入点**，更换账号时会自动丢弃并重新鉴权；
+> 仅在 `SESSION_RESUME=true` 时用于 Resume。缓存**绑定 AppID 与接入点**，更换账号时会自动丢弃；
 > 如需强制清理可加 `--reset` 或直接删除该文件。
 
 ### 4. 启动机器人
@@ -100,18 +105,19 @@ src/
   config.ts            运行配置（环境变量 + zod 校验）
   env.ts               .env 加载（不覆盖已有环境变量）
   logger.ts            统一日志
-  index.ts             本地运行入口
+  index.ts             机器人入口（npm start）
   qq/
     token.ts           Access Token 自动刷新
     api-client.ts      QQ HTTP API（发消息、富媒体分片上传）
-    gateway.ts         Gateway WebSocket（心跳、重连、Resume）
+    gateway.ts         Gateway WebSocket（心跳、重连、Resume 看门狗）
     dedupe.ts          msg_id + msg_seq 去重
-    session-store.ts   会话持久化（重启后 Resume）
+    session-store.ts   会话持久化（绑定 AppID，重启后可选 Resume）
     types.ts           事件与 opcode 类型
   market/
     eastmoney.ts       东方财富行业板块取数、过滤、排序
     cache.ts           短时缓存（含请求合并）
     format.ts          成交额/涨跌幅/行情时间格式化
+    types.ts           行情领域模型
   render/
     treemap.ts         squarified Treemap 布局
     color.ts           涨跌幅 → 颜色映射
@@ -120,16 +126,18 @@ src/
     parser.ts          @ 消息内容 → 指令
     bot.ts             指令路由、上传、被动回复、兜底
 scripts/
-  verify-market.ts     行情取数自检
-  verify-qq-access.ts  QQ 凭据与接入点自检
-  verify-inbound.ts    收消息自检（里程碑 1）
-  render-sample.ts     本地出图自检
+  verify.ts            统一自检入口（market / render / qq / inbound / upload）
 tests/                 vitest 单元测试
+docs/
+  API_BAIDU_BLOCKS.md  历史调研：百度股市通板块接口实测记录（MVP 最终未采用）
 ```
 
 ## 开发命令
 
 ```bash
+npm start           # 启动机器人
+npm run dev         # 启动并监听文件变更
+npm run verify      # 自检（market + render + qq）
 npm run typecheck   # tsc --noEmit
 npm test            # vitest run
 npm run check       # 类型检查 + 测试
@@ -139,8 +147,8 @@ npm run check       # 类型检查 + 测试
 
 | 现象 | 排查方向 |
 |---|---|
-| `verify:inbound` 超时收不到事件 | 机器人是否已加入该群；群里 @ 的是否是这个机器人；沙箱群需 `QQ_ENV=sandbox` |
-| 换了 APP_ID 却仍连上上一个机器人 | 已修复：会话缓存绑定 AppID 会自动失效；必要时 `npm run verify:inbound -- 60 --reset` 清理 `.tmp-probe/gateway-session.json` |
+| `verify -- inbound` 超时收不到事件 | 机器人是否已加入该群；群里 @ 的是否是这个机器人；沙箱群需 `QQ_ENV=sandbox` |
+| 换了 APP_ID 却仍连上上一个机器人 | 会话缓存绑定 AppID 会自动失效；必要时 `npm run verify -- inbound 60 --reset` 清理 `.tmp-probe/gateway-session.json` |
 | 错误码 `40034024` / `40034005` | `msg_id` 无效或已过期（被动回复必须在 5 分钟内） |
 | 错误码 `40054005` | 消息被去重，检查 `msg_seq` 是否重复 |
 | 错误码 `850031` | 上传文件超过大小限制 |

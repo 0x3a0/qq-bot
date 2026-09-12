@@ -141,10 +141,10 @@ Railway 配置要点：
 ```bash
 npm install
 copy .env.example .env       # 填入 APP_ID / CLIENT_SECRET
-npm run verify:market        # 行情取数（无需凭据）
-npm run render:sample        # 本地出图（无需凭据）
-npm run verify:qq            # Token + Gateway 接入点自检
-npm run verify:inbound       # ★ 监听并打印 GROUP_AT_MESSAGE_CREATE 事件
+npm run verify -- market     # 行情取数（无需凭据）
+npm run verify -- render     # 本地出图（无需凭据）
+npm run verify -- qq         # Token + Gateway 接入点自检
+npm run verify -- inbound    # ★ 监听并打印 GROUP_AT_MESSAGE_CREATE 事件
 npm start                    # 启动机器人，群内 @机器人 大盘 出图
 ```
 
@@ -153,19 +153,21 @@ npm start                    # 启动机器人，群内 @机器人 大盘 出图
 | 方案要求 | 实现位置 |
 |---|---|
 | Access Token 自动刷新 | `src/qq/token.ts`（提前 5 分钟刷新，合并并发请求） |
-| WebSocket 心跳、断线重连与 Resume | `src/qq/gateway.ts`（按官方错误码决定 resume 或 identify） |
+| WebSocket 心跳、断线重连与 Resume | `src/qq/gateway.ts`（按官方错误码决定 resume 或 identify，含 Resume 看门狗） |
 | `msg_id + msg_seq` 去重 | `src/qq/dedupe.ts` |
-| 会话持久化（重启后 Resume） | `src/qq/session-store.ts`（缓存绑定 AppID 与接入点，换账号自动失效） |
+| 会话持久化（可选 Resume） | `src/qq/session-store.ts`（缓存绑定 AppID 与接入点，换账号自动失效；默认不 Resume） |
 | 行情短时缓存和失败兜底 | `src/market/eastmoney.ts`、`src/market/cache.ts`、`src/commands/bot.ts` |
 | 全量行业取数、成交额排序与前 20 筛选 | `src/market/eastmoney.ts` |
 | 富媒体分片上传（本地开发无需公网 URL） | `src/qq/api-client.ts` |
 | Treemap 布局与 PNG 渲染 | `src/render/treemap.ts`、`src/render/image.ts` |
 
-待验证事项（需要真实机器人凭据与测试群）：
+已在测试群实测确认：
 
-1. Gateway 能否收到 `GROUP_AT_MESSAGE_CREATE`（`npm run verify:inbound`）。
-2. 群聊富媒体分片上传接口在真实环境的字段与分片行为。
-3. 被动回复 5 分钟时效与 5 次回复上限的实际表现。
+1. ✅ Gateway 能收到 `GROUP_AT_MESSAGE_CREATE`，`@机器人 ping` 与 `@机器人 大盘` 均正常回复。
+2. ✅ 群聊富媒体分片上传链路已跑通（`upload_prepare` → PUT → `upload_part_finish` → 合并），
+   群内成功收到 1200x900 热力图。**注意服务端下发的 `parts[].index` 是 1-based**，
+   与文档示例的 0-based 不一致，分片偏移必须按 `(index - 1) * blockSize` 计算。
+3. ⏳ 被动回复 5 分钟时效与 5 次回复上限尚未测试（需构造超时/重复场景）。
 
 ## 9. MVP 验收标准
 
