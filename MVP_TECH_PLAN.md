@@ -55,6 +55,21 @@ src/
 
 第一版使用东方财富行业板块数据，取行业名称、涨跌幅和成交额。行情接口封装在独立的数据源模块中，图片上标注数据源和更新时间。
 
+#### 百度股市通板块接口（备选源，规格见 `docs/API_BAIDU_BLOCKS.md`）
+
+用户提供的浏览器请求对应接口如下，MVP 阶段作为**交叉校验/备选源**接入（主源仍为东方财富）：
+
+- **接口**：`GET https://finance.pae.baidu.com/vapi/v2/blocks`
+- **必要 Query 参数**：`market=ab`（A 股）、`typeCode=HY`（行业板块）、`sortKey=amount`、`sortType=desc`、`style=heatmap`、`pn=0`（0-based 页码）、`rn=100`（每页条数，实测 `rn=200` 可一次取全 131 个板块）、`finClientType=pc`
+- **必要 Header**：`acs-token`、`Cookie`（至少 `BAIDUID`）、`accept: application/vnd.finance-web.v1+json`、`origin`、`referer`、`user-agent`
+- **取数**：面积用 `rawData.amount`（元），颜色用 `rawData.pxChangeRate`（百分数）；**必须用 `rawData.*` 数值字段**，不要解析 `amount: "2093亿"` 这类中文格式化串
+- **响应无行情时间字段**，需另取 `/vapi/v1/blocks/overview`（实测无需 `acs-token`）的 `minuteData.priceinfo[].time` 作为行情时间
+
+⚠️ **两个硬约束**（均已实测，详见规格文档 §6）：
+
+1. `acs-token` 由百度 ACS SDK（`https://dlswbr.baidu.com/heicha/mm/2108/acs-2108.js`）在**浏览器内**生成，重度混淆、无法在 Node 服务端复现；且疑似**不足 24 小时即失效**，需人工注入或 Playwright 供给。
+2. 风控严格：约 **10–14 次/分钟**即返回 `403 {"Result":{"code":403,"msg":"hit risk","isCaptchaEnabled":true}}`，且冷却 **≥13 分钟未自动恢复**，保守按「会话级永久失效」处理（告警 + 换凭据，不可重试兜底）。因此必须 `rn=200` 一次取全 + 长缓存，禁止重试风暴。注意 403 时 `ResultCode` 仍为 `0`，**不能只看 `ResultCode` 判成功**。
+
 ### 美股
 
 第一版使用 11 个 SPDR 行业 ETF 作为行业代理，例如科技 `XLK`、金融 `XLF`、能源 `XLE`。图片中明确标注“行业 ETF 代理”，后续再评估 Finnhub 等真正的行业聚合数据源。
@@ -84,6 +99,8 @@ WebSocket 事件
 - WebSocket 心跳、断线重连和 Resume
 - `msg_id + msg_seq` 去重
 - 行情短时缓存和失败兜底
+- 数据源限流保护：行情缓存 TTL ≥ 5 分钟，同一数据源请求串行化并加最小间隔，**禁止失败重试风暴**（百度源 403 判定见 §4）
+- 凭据注入：`acs-token` / `BAIDUID` 等会话级凭据从环境变量读取，不入库、不落日志
 
 ## 6. 部署方案：Railway + WebSocket
 
@@ -114,7 +131,14 @@ Railway 配置要点：
 4. 完成富媒体上传并发送 A 股图片。
 5. 接入美股 ETF 数据并发送第二张图片。
 6. 补齐缓存、重连、错误处理和单元测试。
+7. （可选）按 `docs/API_BAIDU_BLOCKS.md` 接入百度股市通板块接口，作为 A 股数据的交叉校验或备选源；需先解决 `acs-token` 供给与限流保护。
 
 ## 8. MVP 验收标准
 
 在测试群中发送 `@机器人 大盘`，能够在 5 分钟内收到两张带有更新时间和数据源标记的行情图片；重复事件不会重复发图；数据源或图片生成失败时能够返回文字错误提示。
+
+数据源相关补充验收项（对应 §4 百度源）：
+
+- 单次会话内不因请求过密触发 `403 hit risk`；命中风控时降级到缓存或主源，不重试。
+- 判定成功必须同时校验 HTTP 状态码与业务码，不能只看 `ResultCode == 0`。
+- 图片上的「行情时间」来源明确：若数据源无时间戳，则标注为采集时间并写明与行情时间的差异。
