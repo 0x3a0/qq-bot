@@ -14,6 +14,7 @@
 
 - [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) —— 部署、字体、故障排查、踩坑记录、性能实测
 - [docs/API_EASTMONEY_FUNDFLOW.md](./docs/API_EASTMONEY_FUNDFLOW.md) —— 东方财富资金流接口字段与实测校验
+- [docs/TECH_PLAN_C2C.md](./docs/TECH_PLAN_C2C.md) —— 单聊（C2C）指令支持的技术方向（待实现）
 
 ## 快速开始（本地运行）
 
