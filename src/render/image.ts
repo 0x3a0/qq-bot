@@ -22,6 +22,8 @@ export interface RenderImageOptions {
   width?: number;
   height?: number;
   fontFiles?: string[];
+  /** 生成时刻，用于判断行情是否为上一交易日（测试注入用） */
+  now?: Date;
 }
 
 export interface RenderedImage {
@@ -75,12 +77,15 @@ export function renderSvg(options: RenderImageOptions): { svg: string; tiles: Tr
     { width: chartWidth, height: chartHeight, padding: TILE_PADDING, outerPadding: 0 },
   );
 
-  const subtitle = formatSnapshotSubtitle({
-    source: options.source,
-    quoteTime: options.quoteTime,
-    fetchedAt: options.fetchedAt,
-    blockCount: tiles.length,
-  });
+  const subtitle = formatSnapshotSubtitle(
+    {
+      source: options.source,
+      quoteTime: options.quoteTime,
+      fetchedAt: options.fetchedAt,
+      blockCount: tiles.length,
+    },
+    options.now ? { now: options.now } : {},
+  );
 
   const stats = summarizeBlocks(options.blocks.slice(0, tiles.length));
   const tileMarkup = tiles.map((tile) => renderTile(tile)).join('\n');

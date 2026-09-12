@@ -356,12 +356,33 @@ export class QqApiClient {
       md5_10m: md5(buffer.subarray(0, MD5_10M_BYTES)),
     });
 
-    this.logger.info(`分片上传开始：${fileName}，${prepare.parts.length} 个分片，block_size=${prepare.blockSize}`);
+    this.logger.info(
+      `分片上传开始：${fileName}（${fileSize} 字节），${prepare.parts.length} 个分片，` +
+        `block_size=${prepare.blockSize}，分片序号 ${prepare.parts.map((part) => part.index).join(',')}`,
+    );
 
-    for (const part of prepare.parts) {
-      const start = part.index * prepare.blockSize;
-      const end = Math.min(start + prepare.blockSize, buffer.length);
+    // 按服务端返回的 index 排序后顺序上传。
+    // 注意：服务端下发的 index 实际为 1-based（文档示例写 0-based，但实测首个分片是 1），
+    // 因此偏移必须按 (index - 1) * blockSize 计算，否则会从文件末尾开始上传 0 字节，
+    // 合并时报 850019「富媒体文件格式不支持」。
+    const parts = [...prepare.parts].sort((a, b) => a.index - b.index);
+    let uploadedBytes = 0;
+
+    for (const part of parts) {
+      const partSize = part.blockSize > 0 ? part.blockSize : prepare.blockSize;
+      const start = (part.index - 1) * partSize;
+      const end = Math.min(start + partSize, buffer.length);
+      if (start >= buffer.length) {
+        throw new Error(
+          `分片 ${part.index} 偏移 ${start} 超出文件大小 ${buffer.length}，` +
+            `请检查服务端返回的 index/block_size（index=${part.index} blockSize=${partSize}）`,
+        );
+      }
       const chunk = buffer.subarray(start, end);
+      if (chunk.length === 0) {
+        throw new Error(`分片 ${part.index} 长度为 0（offset=${start}），已中止上传`);
+      }
+      uploadedBytes += chunk.length;
 
       const putResponse = await this.fetchImpl(part.presignedUrl, {
         method: 'PUT',
@@ -381,6 +402,12 @@ export class QqApiClient {
         blockSize: chunk.length,
         md5: md5(chunk),
       });
+
+      this.logger.debug(`分片 ${part.index} 完成：bytes ${start}..${end}（${chunk.length} 字节）`);
+    }
+
+    if (uploadedBytes !== fileSize) {
+      throw new Error(`分片上传字节数不匹配：已上传 ${uploadedBytes}，文件大小 ${fileSize}`);
     }
 
     const uploaded = await this.uploadMerge({

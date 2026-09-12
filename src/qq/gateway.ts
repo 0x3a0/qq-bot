@@ -35,8 +35,17 @@ export interface GatewayClientOptions {
   handshakeTimeoutMs?: number;
   /** 初始会话（用于进程重启后 Resume），seq 必须是最后处理过的 s */
   session?: { sessionId: string; lastSeq: number } | null;
+  /**
+   * Resume 观察窗口（毫秒）。平台对已失效的会话仍会回 RESUMED，
+   * 但之后不会再推任何事件；超过该窗口没收到事件就判定会话失效并重新 Identify。
+   * 传 0 关闭看门狗。
+   */
+  resumeGraceMs?: number;
   /** 会话变化回调（READY 后写入、会话失效时置空），可用于持久化 */
-  onSessionChange?: (session: { sessionId: string; lastSeq: number } | null) => void;
+  onSessionChange?: (
+    session: { sessionId: string; lastSeq: number; botId?: string; botName?: string } | null,
+    info?: { reason: 'ready' | 'resumed' | 'event' | 'invalidated' },
+  ) => void;
   /** 测试用 WebSocket 实现 */
   webSocketImpl?: typeof WebSocket;
 }
@@ -79,10 +88,14 @@ export class GatewayClient extends EventEmitter {
 
   private sessionId: string | null = null;
   private lastSeq: number | null = null;
+  private botId: string | null = null;
+  private botName: string | null = null;
   private state: HandshakeState = 'idle';
   private reconnectAttempts = 0;
   private stopped = false;
   private awaitingPongFor: number | null = null;
+  private resumeWatchdog: NodeJS.Timeout | null = null;
+  private resumeEpoch = 0;
 
   constructor(options: GatewayClientOptions) {
     super();
@@ -101,6 +114,16 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  /** 强制放弃当前会话，下次连接重新 Identify。 */
+  private invalidateSession(reason: string): void {
+    if (this.sessionId === null) return;
+    this.logger.warn(`放弃当前会话（${reason}），将重新 Identify`);
+    this.sessionId = null;
+    this.lastSeq = null;
+    this.clearResumeWatchdog();
+    this.notifySessionChange('invalidated');
+  }
+
   override on<K extends keyof GatewayEvents>(event: K, listener: GatewayEvents[K]): this {
     return super.on(event, listener as (...args: unknown[]) => void);
   }
@@ -115,6 +138,11 @@ export class GatewayClient extends EventEmitter {
 
   get session(): { sessionId: string | null; lastSeq: number | null } {
     return { sessionId: this.sessionId, lastSeq: this.lastSeq };
+  }
+
+  /** 当前连接的机器人身份（READY 之后才有值）。 */
+  get botInfo(): { id: string | null; name: string | null } {
+    return { id: this.botId, name: this.botName };
   }
 
   /**
@@ -143,6 +171,7 @@ export class GatewayClient extends EventEmitter {
   stop(): void {
     this.stopped = true;
     this.clearTimers();
+    this.clearResumeWatchdog();
     const ws = this.ws;
     if (ws) {
       // 注意：不能先移除监听器，否则 close 回调无法 resolve connectOnce。
@@ -262,8 +291,9 @@ export class GatewayClient extends EventEmitter {
           } else {
             this.logger.info(`关闭码 ${code}，重连后将重新 Identify`);
             this.sessionId = null;
-            this.notifySessionChange();
+            this.notifySessionChange('invalidated');
           }
+          this.clearResumeWatchdog();
           finish(true);
         });
       })();
@@ -310,9 +340,7 @@ export class GatewayClient extends EventEmitter {
       case OpCode.InvalidSession: {
         const resumable = payload.d === true;
         this.logger.warn(`会话无效 (op=9)，resumable=${String(resumable)}`);
-        this.sessionId = null;
-        this.lastSeq = null;
-        this.notifySessionChange();
+        this.invalidateSession('服务端返回 op=9');
         ctx.ws.close(resumable ? 4009 : 4006, 'invalid-session');
         return;
       }
@@ -326,16 +354,22 @@ export class GatewayClient extends EventEmitter {
     if (typeof payload.s === 'number') this.lastSeq = payload.s;
     const type = payload.t ?? 'UNKNOWN';
 
+    // 收到任何事件都说明当前连接是活的：撤销 Resume 看门狗
+    this.clearResumeWatchdog();
+
     if (type === 'READY') {
       const data = payload.d as ReadyData | undefined;
       this.sessionId = data?.session_id ?? null;
+      this.botId = data?.user?.id ?? null;
+      this.botName = data?.user?.username ?? null;
       this.state = 'ready';
       this.reconnectAttempts = 0;
       this.clearHandshakeTimer();
       this.logger.info(
-        `Gateway 鉴权成功 READY，session_id=${this.sessionId ?? '(空)'}，机器人=${data?.user?.username ?? '未知'}`,
+        `Gateway 鉴权成功 READY，session_id=${this.sessionId ?? '(空)'}，` +
+          `机器人=${this.botName ?? '未知'}（id=${this.botId ?? '-'}）`,
       );
-      this.notifySessionChange();
+      this.notifySessionChange('ready');
       this.emit('ready', data ?? {});
       return;
     }
@@ -344,14 +378,18 @@ export class GatewayClient extends EventEmitter {
       this.state = 'ready';
       this.reconnectAttempts = 0;
       this.clearHandshakeTimer();
-      this.logger.info('Gateway 会话已恢复 RESUMED');
-      this.notifySessionChange();
+      this.logger.info(
+        `Gateway 会话已恢复 RESUMED（复用 session_id=${this.sessionId ?? '-'}）。` +
+          '注意：平台对已失效的会话也会返回 RESUMED 但不再推送事件，已启动观察窗口。',
+      );
+      this.notifySessionChange('resumed');
+      this.armResumeWatchdog();
       this.emit('resumed');
       return;
     }
 
     const event: GatewayEvent = { type, data: payload.d, seq: payload.s, id: payload.id };
-    this.notifySessionChange();
+    this.notifySessionChange('event');
     this.emit('event', event);
 
     if (type === 'GROUP_AT_MESSAGE_CREATE') {
@@ -364,16 +402,68 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  /**
+   * Resume 成功后启动观察窗口：窗口内没有收到任何事件，
+   * 说明这个会话在平台侧已经失效（Resume 假成功），强制重新 Identify。
+   */
+  private armResumeWatchdog(): void {
+    this.clearResumeWatchdog();
+    const graceMs = this.options.resumeGraceMs ?? 0;
+    if (graceMs <= 0 || this.ws === null) return;
+
+    this.resumeEpoch += 1;
+    const epoch = this.resumeEpoch;
+    this.logger.info(`Resume 观察窗口 ${graceMs}ms：窗口内无事件则重新鉴权`);
+    this.resumeWatchdog = setTimeout(() => {
+      if (this.stopped || epoch !== this.resumeEpoch) return;
+      if (this.state !== 'ready' || this.sessionId === null) return;
+      this.logger.warn(
+        `Resume 后 ${graceMs}ms 内没有收到任何事件，判定会话已失效，重新建立连接并 Identify`,
+      );
+      this.sessionId = null;
+      this.lastSeq = null;
+      this.notifySessionChange('invalidated');
+      const ws = this.ws;
+      if (ws) {
+        try {
+          ws.close(4006, 'resume-grace-expired');
+        } catch {
+          /* 忽略 */
+        }
+      }
+    }, graceMs);
+    this.resumeWatchdog.unref?.();
+  }
+
+  private clearResumeWatchdog(): void {
+    if (this.resumeWatchdog) {
+      clearTimeout(this.resumeWatchdog);
+      this.resumeWatchdog = null;
+    }
+  }
+
   /** 是否具备 Resume 条件：需要同时有 session_id 与已收到的 seq。 */
   private canResume(): boolean {
     return this.sessionId !== null && this.lastSeq !== null;
   }
 
   /** 通知外部持久化当前会话状态。 */
-  private notifySessionChange(): void {
+  private notifySessionChange(reason: 'ready' | 'resumed' | 'event' | 'invalidated'): void {
     const handler = this.options.onSessionChange;
     if (!handler) return;
-    handler(this.canResume() ? { sessionId: this.sessionId as string, lastSeq: this.lastSeq as number } : null);
+    if (!this.canResume()) {
+      handler(null, { reason });
+      return;
+    }
+    handler(
+      {
+        sessionId: this.sessionId as string,
+        lastSeq: this.lastSeq as number,
+        ...(this.botId ? { botId: this.botId } : {}),
+        ...(this.botName ? { botName: this.botName } : {}),
+      },
+      { reason },
+    );
   }
 
   private sendIdentify(ws: WebSocket, mode: 'identify' | 'resume', token: string): void {
@@ -473,6 +563,7 @@ export class GatewayClient extends EventEmitter {
   private clearTimers(): void {
     this.clearHeartbeatTimer();
     this.clearHandshakeTimer();
+    this.clearResumeWatchdog();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

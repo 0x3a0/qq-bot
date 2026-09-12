@@ -62,4 +62,14 @@ describe('loadConfig', () => {
     expect(loadConfig(base).imageOutputDir).toBe('.tmp-probe/images');
     expect(loadConfig({ ...base, IMAGE_OUTPUT_DIR: 'out' }).imageOutputDir).toBe('out');
   });
+
+  it('★ 默认不启用会话 Resume（避免复用已失效会话收不到事件）', () => {
+    expect(loadConfig(base).sessionResume).toBe(false);
+    expect(loadConfig(base).resumeGraceMs).toBe(10_000);
+    expect(loadConfig({ ...base, SESSION_RESUME: 'true' }).sessionResume).toBe(true);
+  });
+
+  it('RESUME_GRACE_MS 过小时被拒绝', () => {
+    expect(() => loadConfig({ ...base, RESUME_GRACE_MS: '10' })).toThrow(/RESUME_GRACE_MS/);
+  });
 });

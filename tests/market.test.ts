@@ -7,7 +7,14 @@ import {
   normalizeIndustryRows,
   takeTopBlocks,
 } from '../src/market/eastmoney.js';
-import { formatChangePercent, formatQuoteTime, formatTurnover, summarizeBlocks } from '../src/market/format.js';
+import {
+  formatChangePercent,
+  formatQuoteTime,
+  formatSnapshotSubtitle,
+  formatTurnover,
+  isPreviousTradingDay,
+  summarizeBlocks,
+} from '../src/market/format.js';
 
 const logger = createLogger('test');
 logger.debug = () => {};
@@ -233,6 +240,42 @@ describe('format 工具', () => {
     // 2025-08-01T02:30:00Z == 北京时间 10:30
     expect(formatQuoteTime(new Date('2025-08-01T02:30:00Z'))).toBe('08-01 10:30');
     expect(formatQuoteTime(null)).toBe('时间未知');
+  });
+
+  it('★ 非今日行情标注为上一交易日数据，避免误读成实时行情', () => {
+    // 周六 16:00（北京时间）查看周五收盘数据
+    const saturday = new Date('2026-09-12T08:00:00Z'); // 北京 16:00
+    const fridayQuote = new Date(1789112372 * 1000); // 北京 2026-09-11 15:39
+    const subtitle = formatSnapshotSubtitle(
+      { source: '东方财富', quoteTime: fridayQuote, fetchedAt: saturday, blockCount: 20 },
+      { now: saturday },
+    );
+    expect(subtitle).toContain('2026-09-11 15:39');
+    expect(subtitle).toContain('上一交易日数据');
+    expect(isPreviousTradingDay(fridayQuote, saturday)).toBe(true);
+  });
+
+  it('当日行情不添加上一交易日标注', () => {
+    const now = new Date('2026-09-11T07:00:00Z'); // 北京 15:00
+    const quote = new Date('2026-09-11T07:00:00Z');
+    const subtitle = formatSnapshotSubtitle(
+      { source: '东方财富', quoteTime: quote, fetchedAt: now, blockCount: 20 },
+      { now },
+    );
+    expect(subtitle).toContain('行情时间 09-11 15:00');
+    expect(subtitle).not.toContain('上一交易日');
+    expect(isPreviousTradingDay(quote, now)).toBe(false);
+  });
+
+  it('行情时间缺失时回退为抓取时间，不做交易日判断', () => {
+    const now = new Date('2026-09-12T08:00:00Z');
+    const subtitle = formatSnapshotSubtitle(
+      { source: '东方财富', quoteTime: null, fetchedAt: now, blockCount: 20 },
+      { now },
+    );
+    expect(subtitle).toContain('抓取时间');
+    expect(subtitle).not.toContain('上一交易日');
+    expect(isPreviousTradingDay(null, now)).toBe(false);
   });
 
   it('涨跌家数统计', () => {

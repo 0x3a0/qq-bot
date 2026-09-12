@@ -45,13 +45,23 @@ async function main(): Promise<void> {
     sessionStore.clear();
     console.log('[--reset] 已清理上次的会话缓存');
   }
-  const loaded = sessionStore.loadFor({ appId: config.appId, apiBase: config.apiBase });
-  if (loaded.status === 'stale-app') {
-    console.log(
-      `[会话缓存已丢弃] 缓存属于 AppID ${loaded.previous.appId ?? '(未记录)'}` +
-        ` / ${loaded.previous.apiBase ?? '(未记录)'}，当前为 ${config.appId} / ${config.apiBase}`,
-    );
-    sessionStore.clear();
+  const sessionOwner = { appId: config.appId, apiBase: config.apiBase };
+  let resumeSession: { sessionId: string; lastSeq: number } | null = null;
+  let sessionLabel = '未使用（将重新鉴权）';
+  if (config.sessionResume) {
+    const loaded = sessionStore.loadFor(sessionOwner);
+    if (loaded.status === 'stale-app') {
+      console.log(
+        `[会话缓存已丢弃] 缓存属于 AppID ${loaded.previous.appId ?? '(未记录)'}` +
+          ` / ${loaded.previous.apiBase ?? '(未记录)'}，当前为 ${config.appId} / ${config.apiBase}`,
+      );
+      sessionStore.clear();
+    } else if (loaded.status === 'found') {
+      resumeSession = { sessionId: loaded.session.sessionId, lastSeq: loaded.session.lastSeq };
+      sessionLabel = `命中（尝试 Resume，seq=${loaded.session.lastSeq}）`;
+    }
+  } else if (sessionStore.read()) {
+    sessionLabel = '已忽略（SESSION_RESUME=false，新建会话）';
   }
 
   const gateway = new GatewayClient({
@@ -60,9 +70,10 @@ async function main(): Promise<void> {
     logger,
     gatewayUrl: config.gatewayUrl,
     fetchGatewayUrl: () => api.getGatewayUrl(),
-    session: loaded.status === 'found' ? loaded.session : null,
+    session: resumeSession,
+    resumeGraceMs: config.sessionResume ? config.resumeGraceMs : 0,
     onSessionChange: (session) => {
-      if (session) sessionStore.save(session, { appId: config.appId, apiBase: config.apiBase });
+      if (session) sessionStore.save(session, sessionOwner);
     },
   });
 
@@ -70,7 +81,7 @@ async function main(): Promise<void> {
   console.log(`  APP_ID     : ${config.appId}`);
   console.log(`  QQ_ENV     : ${config.qqEnv}（${config.apiBase}）`);
   console.log(`  intents    : ${config.intents}`);
-  console.log(`  会话缓存   : ${loaded.status === 'found' ? '命中（将尝试 Resume）' : '未使用（将重新鉴权）'}`);
+  console.log(`  会话缓存   : ${sessionLabel}`);
   console.log(`  缓存文件   : ${sessionStore.path}`);
 
   // 先确认凭据对应的到底是哪个机器人，避免"换了账号还是上一个 bot"的困惑

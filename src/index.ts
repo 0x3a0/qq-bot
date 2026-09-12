@@ -55,16 +55,27 @@ async function main(): Promise<void> {
     logger,
   });
 
-  // 会话缓存绑定 AppID：更换机器人账号后不会复用上一个 bot 的会话
+  // 会话缓存绑定 AppID：更换机器人账号后不会复用上一个 bot 的会话。
+  // 默认不启用 Resume（SESSION_RESUME=true 才启用）：平台对已失效的会话也会返回
+  // RESUMED 但不再推送事件，直接新建会话最可靠；启用后由看门狗兜底。
   const sessionOwner = { appId: config.appId, apiBase: config.apiBase };
-  const loaded = sessionStore.loadFor(sessionOwner);
-  if (loaded.status === 'stale-app') {
-    logger.warn(
-      `已丢弃不属于当前机器人的会话缓存（缓存 AppID=${loaded.previous.appId ?? '未记录'}，当前=${config.appId}），将重新鉴权`,
-    );
-    sessionStore.clear();
-  } else if (loaded.status === 'found') {
-    logger.info(`找到本机器人的历史会话，将尝试 Resume（seq=${loaded.session.lastSeq}）`);
+  let resumeSession: { sessionId: string; lastSeq: number } | null = null;
+  if (config.sessionResume) {
+    const loaded = sessionStore.loadFor(sessionOwner);
+    if (loaded.status === 'stale-app') {
+      logger.warn(
+        `已丢弃不属于当前机器人的会话缓存（缓存 AppID=${loaded.previous.appId ?? '未记录'}，当前=${config.appId}），将重新鉴权`,
+      );
+      sessionStore.clear();
+    } else if (loaded.status === 'found') {
+      resumeSession = { sessionId: loaded.session.sessionId, lastSeq: loaded.session.lastSeq };
+      logger.info(
+        `找到历史会话，将尝试 Resume：session_id=${loaded.session.sessionId} seq=${loaded.session.lastSeq} ` +
+          `机器人=${loaded.session.botName ?? '未知'}（${loaded.session.botId ?? '-'}）`,
+      );
+    }
+  } else if (sessionStore.read()) {
+    logger.info('SESSION_RESUME 未启用，忽略本地会话缓存并新建会话（避免复用已失效会话收不到事件）');
   }
 
   const gateway = new GatewayClient({
@@ -73,9 +84,10 @@ async function main(): Promise<void> {
     logger,
     gatewayUrl: config.gatewayUrl,
     fetchGatewayUrl: () => api.getGatewayUrl(),
-    session: loaded.status === 'found' ? loaded.session : null,
+    session: resumeSession,
+    resumeGraceMs: config.sessionResume ? config.resumeGraceMs : 0,
     onSessionChange: (session) => {
-      // 保存最新 seq，进程重启后可以 Resume 补发漏掉的事件
+      // 保存最新 seq，SESSION_RESUME=true 时可在进程重启后 Resume
       if (session) sessionStore.save(session, sessionOwner);
     },
   });
@@ -86,7 +98,7 @@ async function main(): Promise<void> {
   });
 
   gateway.on('resumed', () => {
-    logger.info('会话已恢复，继续接收事件');
+    logger.info('会话已恢复，继续接收事件（若长时间无事件会自动重新鉴权）');
   });
 
   if (config.logEvents) {

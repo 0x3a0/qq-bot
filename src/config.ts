@@ -49,6 +49,22 @@ const rawSchema = z.object({
   QQ_GATEWAY_URL: z.string().trim().optional(),
   LOG_LEVEL: logLevelSchema.default('info'),
   LOG_EVENTS: boolSchema,
+  /** 是否允许用持久化会话 Resume。默认 false：始终新建会话，避免复用"死会话"后收不到事件。 */
+  SESSION_RESUME: boolSchema,
+  /** Resume 后的观察窗口（毫秒）：窗口内没收到任何事件则判定会话已失效并重新 Identify */
+  RESUME_GRACE_MS: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value, ctx) => {
+      if (!value) return 10_000;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 1000) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `RESUME_GRACE_MS 必须是不小于 1000 的数字，当前为 ${value}` });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
   MARKET_CACHE_TTL_MS: z
     .string()
     .trim()
@@ -75,6 +91,8 @@ export interface AppConfig {
   gatewayUrl: string | null;
   logLevel: z.infer<typeof logLevelSchema>;
   logEvents: boolean;
+  sessionResume: boolean;
+  resumeGraceMs: number;
   marketCacheTtlMs: number;
   fontFiles: string[];
   imageOutputDir: string;
@@ -109,6 +127,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     gatewayUrl: raw.QQ_GATEWAY_URL && raw.QQ_GATEWAY_URL.length > 0 ? raw.QQ_GATEWAY_URL : null,
     logLevel: raw.LOG_LEVEL,
     logEvents: raw.LOG_EVENTS,
+    sessionResume: raw.SESSION_RESUME,
+    resumeGraceMs: raw.RESUME_GRACE_MS,
     marketCacheTtlMs: raw.MARKET_CACHE_TTL_MS,
     fontFiles: splitList(raw.FONT_FILES),
     imageOutputDir: raw.IMAGE_OUTPUT_DIR && raw.IMAGE_OUTPUT_DIR.length > 0 ? raw.IMAGE_OUTPUT_DIR : '.tmp-probe/images',

@@ -19,6 +19,9 @@ export interface PersistedSession {
   appId?: string;
   /** 会话所属接入点（区分正式/沙箱、自建域名） */
   apiBase?: string;
+  /** 会话所属机器人身份（用于日志确认"连上的是哪个 bot"） */
+  botId?: string;
+  botName?: string;
   /** 写入时间（ISO 字符串） */
   savedAt?: string;
 }
@@ -58,6 +61,8 @@ export class SessionStore {
           lastSeq: Number(parsed.lastSeq),
           appId: typeof parsed.appId === 'string' ? parsed.appId : undefined,
           apiBase: typeof parsed.apiBase === 'string' ? parsed.apiBase : undefined,
+          botId: typeof parsed.botId === 'string' ? parsed.botId : undefined,
+          botName: typeof parsed.botName === 'string' ? parsed.botName : undefined,
           savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : undefined,
         };
       }
@@ -103,6 +108,8 @@ export class SessionStore {
             lastSeq: session.lastSeq,
             appId: owner?.appId ?? session.appId,
             apiBase: owner?.apiBase ?? session.apiBase,
+            botId: session.botId,
+            botName: session.botName,
             savedAt: new Date().toISOString(),
           },
           null,

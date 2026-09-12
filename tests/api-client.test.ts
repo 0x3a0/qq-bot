@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { QqApiClient, QqApiError, MD5_10M_BYTES, md5 } from '../src/qq/api-client.js';
 import { createLogger } from '../src/logger.js';
 import type { TokenManager } from '../src/qq/token.js';
@@ -137,6 +140,117 @@ describe('QqApiClient', () => {
   it('204 空响应返回 undefined 且不抛错', async () => {
     const client = createClient((async () => new Response(null, { status: 204 })) as unknown as typeof fetch);
     await expect(client.uploadPartFinish({ groupOpenid: 'G', uploadId: 'u', partIndex: 0, blockSize: 1, md5: 'm' })).resolves.toBeUndefined();
+  });
+});
+
+describe('分片上传（1-based index 回归）', () => {
+  /** 记录每个分片实际 PUT 的字节数，以及 part_finish 上报的 part_index。 */
+  function createUploadFetch(sizes: number[], firstIndex: number) {
+    const puts: { index: number; bytes: number }[] = [];
+    const finishes: number[] = [];
+    let partCursor = 0;
+
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes('/upload_prepare')) {
+        return json({
+          upload_id: 'upload_test',
+          block_size: String(sizes[0]),
+          parts: sizes.map((size, offset) => ({
+            index: firstIndex + offset,
+            presigned_url: `https://cos.example/part-${firstIndex + offset}`,
+            block_size: String(size),
+          })),
+          upload_config: { concurrency: 1, retry_timeout: 30, retry_delay: 1 },
+        });
+      }
+      if (target.includes('/upload_part_finish')) {
+        const body = JSON.parse(String(init?.body)) as { part_index: number };
+        finishes.push(body.part_index);
+        return json({});
+      }
+      if (target.startsWith('https://cos.example/')) {
+        const bytes = (init?.body as Uint8Array).length;
+        puts.push({ index: Number(target.split('-').pop()), bytes });
+        partCursor += 1;
+        return new Response(null, { status: 200 });
+      }
+      // merge
+      return json({ file_info: 'FILE_INFO_OK', ttl: 86400 });
+    });
+
+    return { fetchImpl, puts, finishes, expectedParts: partCursor };
+  }
+
+  it('★ 服务端 index 为 1-based 时，每个分片都上传真实字节（不再上传 0 字节）', async () => {
+    // 模拟实测场景：单分片、index=1
+    const { fetchImpl, puts, finishes } = createUploadFetch([1024], 1);
+    const client = createClient(fetchImpl as unknown as typeof fetch);
+    const filePath = join(tmpdir(), `qq-bot-upload-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(1024, 7));
+
+    try {
+      const uploaded = await client.uploadGroupFileFromPath({
+        groupOpenid: 'G',
+        filePath,
+        fileName: 'a.png',
+        fileType: 1,
+      });
+      expect(uploaded.fileInfo).toBe('FILE_INFO_OK');
+      expect(puts).toEqual([{ index: 1, bytes: 1024 }]);
+      expect(finishes).toEqual([1]);
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  });
+
+  it('★ 多分片：偏移按 (index - 1) * blockSize 计算，总字节数等于文件大小', async () => {
+    const { fetchImpl, puts, finishes } = createUploadFetch([500, 300, 200], 1);
+    const client = createClient(fetchImpl as unknown as typeof fetch);
+    const filePath = join(tmpdir(), `qq-bot-upload-multi-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(1000, 3));
+
+    try {
+      await client.uploadGroupFileFromPath({ groupOpenid: 'G', filePath, fileName: 'big.png', fileType: 1 });
+      expect(puts.map((item) => item.bytes)).toEqual([500, 300, 200]);
+      expect(puts.reduce((sum, item) => sum + item.bytes, 0)).toBe(1000);
+      expect(finishes).toEqual([1, 2, 3]);
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  });
+
+  it('分片偏移越界时立即报错，不再发起无用上传', async () => {
+    // 文件只有 100 字节，但服务端声称第一片 200 字节、第二片从偏移 200 开始 -> 越界
+    const { fetchImpl, puts } = createUploadFetch([200, 200], 1);
+    const client = createClient(fetchImpl as unknown as typeof fetch);
+    const filePath = join(tmpdir(), `qq-bot-upload-oob-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(100, 1));
+
+    try {
+      await expect(
+        client.uploadGroupFileFromPath({ groupOpenid: 'G', filePath, fileName: 'x.png', fileType: 1 }),
+      ).rejects.toThrow(/超出文件大小/);
+      expect(puts).toHaveLength(1);
+    } finally {
+      await rm(filePath, { force: true });
+    }
+  });
+
+  it('总上传字节数与文件大小不符时报错（防止合并空文件）', async () => {
+    // 服务端只下发到偏移 100 之前的分片，文件却有 300 字节
+    const { fetchImpl } = createUploadFetch([100], 1);
+    const client = createClient(fetchImpl as unknown as typeof fetch);
+    const filePath = join(tmpdir(), `qq-bot-upload-short-${Date.now()}.bin`);
+    await writeFile(filePath, Buffer.alloc(300, 1));
+
+    try {
+      await expect(
+        client.uploadGroupFileFromPath({ groupOpenid: 'G', filePath, fileName: 'x.png', fileType: 1 }),
+      ).rejects.toThrow(/字节数不匹配/);
+    } finally {
+      await rm(filePath, { force: true });
+    }
   });
 });
 

@@ -327,6 +327,90 @@ describe('GatewayClient', () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
+  it('★ Resume 后观察窗口内无事件时，判定会话失效并重新 Identify', async () => {
+    FakeWebSocket.reset();
+    const invalidations: unknown[] = [];
+    const client = createClient({
+      session: { sessionId: 'dead-session', lastSeq: 5 },
+      resumeGraceMs: 30,
+      onSessionChange: (session) => invalidations.push(session),
+    });
+    void client.run();
+    await waitFor(() => FakeWebSocket.instances.length === 1);
+    const first = FakeWebSocket.instances[0]!;
+    first.serverSend({ op: OpCode.Hello, d: { heartbeat_interval: 60_000 } });
+    await waitFor(() => first.sent.length > 0);
+    expect(first.lastPayload()?.op).toBe(OpCode.Resume);
+
+    // 死会话：平台回 RESUMED 但之后不再推任何事件
+    first.serverSend({ op: OpCode.Dispatch, s: 6, t: 'RESUMED', d: '' });
+    // 等待看门狗触发 -> 关闭连接 -> 重连 -> 重新 Identify
+    await waitFor(() => FakeWebSocket.instances.length === 2, 3000);
+    const second = FakeWebSocket.instances[1]!;
+    second.serverSend({ op: OpCode.Hello, d: { heartbeat_interval: 60_000 } });
+    await waitFor(() => second.sent.length > 0);
+    expect(second.lastPayload()?.op).toBe(OpCode.Identify);
+    expect(first.closed?.code).toBe(4006);
+    expect(invalidations).toContain(null);
+    client.stop();
+  });
+
+  it('★ Resume 后收到事件则撤销看门狗，不会重新鉴权', async () => {
+    FakeWebSocket.reset();
+    const client = createClient({
+      session: { sessionId: 'live-session', lastSeq: 9 },
+      resumeGraceMs: 40,
+    });
+    void client.run();
+    await waitFor(() => FakeWebSocket.instances.length === 1);
+    const ws = FakeWebSocket.instances[0]!;
+    ws.serverSend({ op: OpCode.Hello, d: { heartbeat_interval: 60_000 } });
+    ws.serverSend({ op: OpCode.Dispatch, s: 10, t: 'RESUMED', d: '' });
+    // 窗口内收到一个事件（例如补发的消息）
+    ws.serverSend({ op: OpCode.Dispatch, s: 11, t: 'GROUP_AT_MESSAGE_CREATE', d: { id: 'm1', group_openid: 'g1' } });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(ws.closed).toBeNull();
+    client.stop();
+  });
+
+  it('resumeGraceMs 为 0 时关闭看门狗', async () => {
+    FakeWebSocket.reset();
+    const client = createClient({ session: { sessionId: 's', lastSeq: 1 }, resumeGraceMs: 0 });
+    void client.run();
+    await waitFor(() => FakeWebSocket.instances.length === 1);
+    const ws = FakeWebSocket.instances[0]!;
+    ws.serverSend({ op: OpCode.Hello, d: { heartbeat_interval: 60_000 } });
+    ws.serverSend({ op: OpCode.Dispatch, s: 2, t: 'RESUMED', d: '' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    client.stop();
+  });
+
+  it('READY 后记录机器人身份并写入会话缓存', async () => {
+    FakeWebSocket.reset();
+    const changes: unknown[] = [];
+    const client = createClient({ onSessionChange: (session) => changes.push(session) });
+    void client.run();
+    await waitFor(() => FakeWebSocket.instances.length === 1);
+    const ws = FakeWebSocket.instances[0]!;
+    ws.serverSend({ op: OpCode.Hello, d: { heartbeat_interval: 60_000 } });
+    ws.serverSend({
+      op: OpCode.Dispatch,
+      s: 1,
+      t: 'READY',
+      d: { session_id: 'sess-x', user: { id: '11355245269987831537', username: '0x02' } },
+    });
+    await waitFor(() => client.isReady);
+    expect(client.botInfo).toEqual({ id: '11355245269987831537', name: '0x02' });
+    expect(changes.at(-1)).toMatchObject({
+      sessionId: 'sess-x',
+      botId: '11355245269987831537',
+      botName: '0x02',
+    });
+    client.stop();
+  });
+
   it('标识位判断符合官方错误码表', () => {
     expect(canResumeOnClose(4009)).toBe(true);
     expect(canResumeOnClose(4008)).toBe(true);
