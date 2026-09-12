@@ -12,8 +12,7 @@
 ## 2. 接入方向
 
 - 使用 QQ 机器人 API v2。
-- 接收 `GROUP_AT_MESSAGE_CREATE` 事件，只处理被 @ 的消息。
-- 常驻服务器使用 WebSocket；Serverless 部署使用 QQ Webhook。
+- 通过 QQ Gateway WebSocket 接收 `GROUP_AT_MESSAGE_CREATE` 事件，只处理被 @ 的消息。
 - 使用 `group_openid` 作为群标识。
 - 通过 `POST /v2/groups/{group_openid}/messages` 回复群消息。
 - 图片按富媒体消息发送：先上传图片获取 `file_info`，再使用 `msg_type=7` 发送。
@@ -44,7 +43,7 @@ MVP 直接使用 `fetch + ws` 封装 QQ API，明确控制 Token 刷新、重连
 
 ```text
 src/
-  qq/          # Token、Webhook/WebSocket、消息上传
+  qq/          # Token、WebSocket、消息上传
   market/      # A 股/美股数据源与统一模型
   render/      # Treemap 布局与 PNG 渲染
   commands/    # 大盘指令路由
@@ -71,7 +70,7 @@ src/
 ## 5. 处理流程
 
 ```text
-Webhook 或 WebSocket 事件
+WebSocket 事件
   -> 解析 @机器人 指令
   -> 查询缓存或行情数据
   -> 生成 A 股/美股图片
@@ -86,49 +85,31 @@ Webhook 或 WebSocket 事件
 - `msg_id + msg_seq` 去重
 - 行情短时缓存和失败兜底
 
-## 6. 无服务器部署方案
+## 6. 部署方案：Railway + WebSocket
 
-没有自己的服务器也可以部署，但需要选择正确的 QQ 事件接收方式。
-
-### Vercel
-
-Vercel 适合部署 TypeScript/Node.js Webhook 接口，不适合直接维持 QQ Gateway WebSocket 长连接。推荐流程：
+使用 Railway 部署一个常驻 Node.js 服务，程序启动后主动连接 QQ Gateway。
 
 ```text
-QQ Webhook
-  -> Vercel Function 快速验签并返回 2xx
-  -> QStash / Upstash Queue 异步任务
-  -> 获取行情、生成图片、上传并回复 QQ
+Railway Node.js 服务
+  -> QQ Gateway WebSocket：接收事件、心跳、重连
+  -> QQ HTTP API：获取 Token、上传图片、发送群消息
 ```
 
-需要注意：
+Railway 配置要点：
 
-- Webhook 必须配置公网 HTTPS 地址，并实现官方要求的签名校验。
-- 接口应尽快响应，不能在请求内等待完整的行情和图片流程。
-- Vercel 函数实例是临时的，不能依赖进程内缓存、定时器或本地持久文件。
-- 去重和缓存应使用 Upstash Redis 等外部存储；最简 MVP 可以先接受重复冷启动，但仍需保存事件去重状态。
-- `sharp` 通常可用于 Node.js Serverless；`@resvg/resvg-js` 需要在部署环境中验证打包体积和运行时兼容性。
+- 使用常驻 Service，不使用一次性任务。
+- 将 `APP_ID`、`CLIENT_SECRET` 等敏感配置放入 Railway Variables。
+- 程序必须持续运行，并处理平台重启和部署重启。
+- 记录 Gateway 连接、心跳、重连和消息发送日志。
+- 不依赖本地磁盘保存重要数据；MVP 的短期缓存和去重状态可先放在进程内。
+- 关注 Railway 当前套餐的运行时长、休眠和费用规则。
 
-因此，Vercel 的推荐组合是：
-
-```text
-Vercel + Webhook + Upstash Redis/QStash
-```
-
-### 其他选择
-
-| 平台 | 适合模式 | 说明 |
-|---|---|---|
-| Vercel | Webhook | 无服务器，需队列和外部状态存储 |
-| Railway/Render/Fly.io | WebSocket | 可运行常驻 Node.js 进程，架构更简单 |
-| GitHub Actions | 不推荐 | 不适合持续接收 QQ 事件 |
-
-如果希望尽量少写基础设施代码，推荐先使用 Railway、Render 或 Fly.io 的常驻 Node.js 服务；如果必须使用 Vercel，则采用 Webhook + 队列方案。
+本 MVP 暂不实现 Webhook，也不部署到 Vercel。后续如需要 Serverless 再单独设计 Webhook + 队列架构。
 
 ## 7. 里程碑
 
 1. 测试群中完成机器人注册和 `@` 事件接收。
-2. 完成 Token、Webhook/WebSocket 和文本回复。
+2. 完成 Token、WebSocket 和文本回复。
 3. 完成 A 股数据与 Treemap 图片。
 4. 完成富媒体上传并发送 A 股图片。
 5. 接入美股 ETF 数据并发送第二张图片。
