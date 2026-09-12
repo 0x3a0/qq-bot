@@ -126,9 +126,28 @@ GET https://push2.eastmoney.com/api/qt/ulist.np/get
 候选方案（优先级从高到低）：
 
 1. **行业 ETF 代理**：用 SPDR 十一大行业 ETF（`XLK` 科技、`XLF` 金融、`XLE` 能源、`XLV` 医疗、`XLI` 工业、`XLY` 可选消费、`XLP` 必需消费、`XLU` 公用事业、`XLB` 材料、`XLRE` 房地产、`XLC` 通信）作为板块代理，经东财美股个股接口（市场前缀 `105.`）取涨跌幅与成交额。这是美股板块的通行口径，**且恰好是 11 个板块，treemap 密度合适**。
-2. Stooq 免费 CSV 接口。
-3. 腾讯 / 新浪美股接口。
-4. 付费源：Tushare Pro / Financial Modeling Prep 等。
+2. **Finnhub（待验证，见 §3.4b）**。
+3. Stooq 免费 CSV 接口。
+4. 腾讯 / 新浪美股接口。
+5. 付费源：Tushare Pro / 东方财富 Choice 等。
+
+### 3.4b Finnhub 评估 — ⚠️ 有两个决定性未知项
+
+**接口确实存在**：`sector_metric(region)` → `GET /stock/sector-metric`，返回结构为
+`{region: string, data: [SectorMetricData]}`（每个 sector 一条指标）。这正是板块级数据，不需要用 ETF 拼代理。
+
+**但以下两项必须先验证，否则方案无法定稿：**
+
+| 项 | 状态 | 影响 |
+|---|---|---|
+| **需要 API Key** | ⚠️ 必须注册 | 不再是「无需 Key」的方案，Key 需存入环境变量并妥善保管 |
+| 免费档额度 | 60 请求/分钟 | 对本场景（每次触发 1 次请求 + 缓存）足够 |
+| **`/stock/sector-metric` 是否含在免费档** | ❓ **未验证 → 阻塞项** | 若属付费端点则返回 403，方案作废 |
+| **中国大陆可访问性** | ❓ **未验证 → 阻塞项** | 若与 Yahoo 同样地缘封锁，方案作废 |
+
+> 第三方文档明确警告「不要假设免费 Key 能调用付费端点」，且 Finnhub 免费档官方描述聚焦于**个股**数据（"US quotes and selected company data"），**聚合板块指标很可能在付费侧**。此风险是实质性的。
+>
+> **验证方法**：注册免费 Key 后实测两点——① 接口能否连通；② 返回是数据还是 403。两分钟即可得出结论。
 
 ### 3.5 数据源的已知风险
 
@@ -168,7 +187,20 @@ GET https://push2.eastmoney.com/api/qt/ulist.np/get
 - **数据源**：东财公开接口为主，封装在数据源抽象层之后。
 - **Python**：3.13（`.python-version`），依赖用 `uv` 管理。
 
-> ⚠️ 本机沙箱限制：`uv` 需要写工作区外的共享解释器与包缓存，**依赖安装需在受限环境外手动执行**（`uv add httpx websockets matplotlib ...`）。
+> ⚠️ 本机沙箱限制：`uv` 需要写工作区外的共享解释器与包缓存，**依赖安装需在受限环境外手动执行**（`uv sync`）。
+
+### 5.1 本机环境实测（2026-09）
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| **Python HTTPS** | ✅ **正常** | `urllib`/`httpx` 访问 `push2delay`、`api.github.com`、`pypi.org` 均 200。数据源可放心用 HTTPS |
+| Python HTTP | ✅ 正常 | 明文 HTTP 亦可直连 |
+| **git push** | ❌ 失败 | `http.sslbackend=schannel` + credential helper 需命名管道，而沙箱禁止创建命名管道 → `SEC_E_NO_CREDENTIALS`。**需在沙箱外执行 `git push origin main`** |
+| git ssh | ❌ 失败 | ssh 无法创建 signal pipe（同一沙箱限制） |
+| `uv` 安装依赖 | ❌ 失败 | 需写工作区外的解释器与缓存目录 |
+
+> ❗ 曾有一度认为「本机 HTTPS 全部失败、数据源只能用 HTTP」，**该结论已被实测推翻**——失败的只是需要证书凭据的客户端（git / ssh），Python 的 TLS 栈完全正常。
+> 数据源选型**不必**为 HTTP 做妥协。
 
 ## 6. 里程碑
 
