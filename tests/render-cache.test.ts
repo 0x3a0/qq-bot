@@ -12,8 +12,8 @@ const base = {
   source: '东方财富',
   quoteTime: new Date(1_752_000_000 * 1000),
   fetchedAt: new Date(),
-  title: '行业板块主力流入Top2',
-  metricLabel: '主力流入',
+  title: '行业板块主力Top2',
+  metricLabel: '主力',
 };
 
 describe('PNG 内容缓存', () => {

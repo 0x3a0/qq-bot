@@ -150,8 +150,9 @@ describe('GroupMessageHandler', () => {
 
     expect(options).toHaveLength(2);
     const titles = options.map((opt) => opt.title).sort();
-    expect(titles).toEqual(['概念板块主力流入Top25', '行业板块主力流入Top25']);
-    expect(options.every((opt) => opt.metricLabel === '主力流入')).toBe(true);
+    expect(titles).toEqual(['概念板块主力Top25', '行业板块主力Top25']);
+    // 页脚说明用更完整的口径名（榜单含净流出板块，主标题不写「流入」）
+    expect(options.every((opt) => opt.metricLabel === '主力净额')).toBe(true);
     // 每个板块共 35 个，取前 25
     expect(options.every((opt) => opt.blocks.length === 25)).toBe(true);
   });
@@ -191,7 +192,7 @@ describe('GroupMessageHandler', () => {
 
     expect(await handler.handle(message)).toBe('images-sent');
     // 概念（快）先渲染完成并先发，拿到 seq=1；行业（慢）随后用 seq=2
-    expect(kinds).toEqual(['概念板块主力流入Top25', '行业板块主力流入Top25']);
+    expect(kinds).toEqual(['概念板块主力Top25', '行业板块主力Top25']);
     expect(events).toEqual(['send@1', 'send@2']);
   });
 

@@ -38,8 +38,15 @@ export const MAX_DEDUPE_RETRIES = 3;
 export const ERR_MESSAGE_DEDUPED = 40054005;
 export const ERR_PASSIVE_REPLY_LIMIT = 40034128;
 
-/** 出图指标名（用于图片主标题与页脚说明）。 */
-export const METRIC_LABEL = '主力流入';
+/**
+ * 出图指标名（用于图片主标题与页脚说明）。
+ * 主标题用「主力」而非「主力流入」：榜单按主力净额降序，但尾部板块可能是净流出，
+ * 写成「流入」会与实际数据矛盾。
+ */
+export const METRIC_LABEL = '主力';
+
+/** 页脚说明用语（比主标题更完整，说明矩形面积的口径）。 */
+export const METRIC_FOOTER_LABEL = '主力净额';
 
 export interface GroupMessage {
   /** 事件体 d.id，用于被动回复 */
@@ -274,7 +281,7 @@ export class GroupMessageHandler {
           metricLabel: METRIC_LABEL,
           blockCount: blocks.length,
         }),
-        metricLabel: METRIC_LABEL,
+        metricLabel: METRIC_FOOTER_LABEL,
         fontFiles: this.deps.fontFiles,
       });
       filePath = await this.saveDebugImage(`${message.messageId}-${kind}`, image.png);

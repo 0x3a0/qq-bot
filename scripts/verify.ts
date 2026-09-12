@@ -27,7 +27,7 @@ import {
   type SectorKind,
 } from '../src/market/fundflow-types.js';
 import { MAX_TOP_SECTORS, takeTopBlocks } from '../src/market/sectors.js';
-import { METRIC_LABEL } from '../src/commands/bot.js';
+import { METRIC_FOOTER_LABEL, METRIC_LABEL } from '../src/commands/bot.js';
 import { QqApiClient, MD5_10M_BYTES, md5 } from '../src/qq/api-client.js';
 import { GatewayClient } from '../src/qq/gateway.js';
 import { SessionStore } from '../src/qq/session-store.js';
@@ -189,7 +189,7 @@ async function runRender(): Promise<void> {
         metricLabel: METRIC_LABEL,
         blockCount: blocks.length,
       }),
-      metricLabel: METRIC_LABEL,
+      metricLabel: METRIC_FOOTER_LABEL,
       fontFiles: config.fontFiles,
     });
 

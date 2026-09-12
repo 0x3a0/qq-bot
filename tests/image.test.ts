@@ -16,29 +16,31 @@ const baseOptions = {
   source: '东方财富',
   quoteTime: new Date(1_752_000_000 * 1000),
   fetchedAt: new Date(),
-  title: '行业板块主力流入Top5',
-  metricLabel: '主力流入',
+  title: '行业板块主力Top5',
+  metricLabel: '主力',
 };
 
 describe('renderSvg', () => {
   it('★ 主标题为「板块类型+指标+Top数量」，副标题为数据源+时间', () => {
     const { svg, width, height } = renderSvg(baseOptions);
     expect(svg.startsWith('<?xml')).toBe(true);
-    expect(svg).toContain('行业板块主力流入Top5');
+    expect(svg).toContain('行业板块主力Top5');
     expect(svg).toContain('东方财富 · 行情时间');
     expect(width).toBe(1200);
     expect(height).toBe(900);
   });
 
-  it('页脚说明随指标名变化', () => {
-    const { svg } = renderSvg(baseOptions);
-    expect(svg).toContain('矩形面积＝主力流入，颜色＝涨跌幅');
+  it('页脚说明使用指标名，且不出现「流入」字样（榜单含净流出板块）', () => {
+    const { svg } = renderSvg({ ...baseOptions, metricLabel: '主力净额' });
+    expect(svg).toContain('矩形面积＝主力净额，颜色＝涨跌幅');
+    // 主标题里的指标名也不应写成「主力流入」
+    expect(svg).not.toContain('主力流入');
   });
 
   it('概念板块图的主标题与行业板块不同', () => {
-    const { svg } = renderSvg({ ...baseOptions, title: '概念板块主力流入Top25' });
-    expect(svg).toContain('概念板块主力流入Top25');
-    expect(svg).not.toContain('行业板块主力流入');
+    const { svg } = renderSvg({ ...baseOptions, title: '概念板块主力Top25' });
+    expect(svg).toContain('概念板块主力Top25');
+    expect(svg).not.toContain('行业板块主力Top');
   });
 
   it('非今日行情只带完整日期，不含「上一交易日数据」后缀', () => {

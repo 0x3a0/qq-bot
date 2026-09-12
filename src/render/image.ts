@@ -17,9 +17,9 @@ export interface RenderImageOptions {
   source: string;
   quoteTime: Date | null;
   fetchedAt: Date;
-  /** 主标题，如「行业板块主力流入Top25」 */
+  /** 主标题，如「行业板块主力Top25」 */
   title: string;
-  /** 指标名，用于页脚说明，如「主力流入」 */
+  /** 指标名，用于页脚说明，如「主力净额」 */
   metricLabel: string;
   width?: number;
   height?: number;

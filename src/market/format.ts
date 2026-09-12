@@ -68,7 +68,7 @@ export interface MarketSummaryOptions {
 }
 
 /**
- * 生成图片主标题，例如「行业板块主力流入Top25」。
+ * 生成图片主标题，例如「行业板块主力Top25」。
  * 板块类型决定主体，指标与数量跟在后面（用户指定的固定文案格式）。
  */
 export function formatImageTitle(params: {
