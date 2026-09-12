@@ -2,8 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GroupMessageHandler, SEQ_FALLBACK, SEQ_PRIMARY, type MessageHandlingDeps } from '../src/commands/bot.js';
+import { GroupMessageHandler, type MessageHandlingDeps } from '../src/commands/bot.js';
 import { createLogger } from '../src/logger.js';
+import { QqApiError } from '../src/qq/api-client.js';
 import { MessageDeduplicator } from '../src/qq/dedupe.js';
 import type { MarketBlock, MarketSnapshot } from '../src/market/types.js';
 
@@ -105,7 +106,7 @@ describe('GroupMessageHandler', () => {
     const imageCall = calls.images[0] as { fileInfo: string; msgId: string; msgSeq: number; groupOpenid: string };
     expect(imageCall.fileInfo).toBe('FILE_INFO_1');
     expect(imageCall.msgId).toBe('ROBOT1.0_msg');
-    expect(imageCall.msgSeq).toBe(SEQ_PRIMARY);
+    expect(imageCall.msgSeq).toBe(1);
     expect(imageCall.groupOpenid).toBe('GROUP_OPENID');
   });
 
@@ -188,7 +189,8 @@ describe('GroupMessageHandler', () => {
     expect(calls.images).toHaveLength(0);
     expect(calls.texts).toHaveLength(1);
     expect(calls.texts[0]?.content).toContain('图片生成失败');
-    expect(calls.texts[0]?.msgSeq).toBe(SEQ_FALLBACK);
+    // 兜底文案使用认领到的第 1 个序号（全局按 msg_id 递增，不再硬编码）
+    expect(calls.texts[0]?.msgSeq).toBe(1);
   });
 
   it('渲染失败时降级为文字 TOP10', async () => {
@@ -204,14 +206,65 @@ describe('GroupMessageHandler', () => {
     expect(calls.texts[0]?.content).toContain('板块0');
   });
 
-  it('上传失败时降级为文字兜底，且允许后续重试', async () => {
+  it('★ 发图被判重（40054005）时换 msg_seq 重试，最终发图成功', async () => {
+    const sendGroupImage = vi
+      .fn()
+      .mockRejectedValueOnce(new QqApiError({ status: 400, code: 40054005, message: '消息被去重', body: '{}' }))
+      .mockResolvedValue({ id: 'ROBOT1.0_sent' });
+
+    const { handler, calls } = createHarness({
+      imageOutputDir: tempDir,
+      api: {
+        uploadGroupFileFromPath: vi.fn(async (params: unknown) => {
+          calls.uploads.push(params);
+          return { fileInfo: 'FILE_INFO_1' };
+        }),
+        sendGroupImage,
+        sendGroupText: vi.fn(async (params: { content: string; msgSeq?: number }) => {
+          calls.texts.push(params);
+          return {};
+        }),
+      } as unknown as MessageHandlingDeps['api'],
+    });
+
+    expect(await handler.handle(message)).toBe('image-sent');
+    expect(sendGroupImage).toHaveBeenCalledTimes(2);
+    const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
+    // 关键：重试必须换 seq，不能沿用被平台判重的那个
+    expect(seqs).toEqual([1, 2]);
+    expect(calls.texts).toHaveLength(0);
+  });
+
+  it('★ 连续判重时持续换 seq，用尽后放弃且不再补发文字', async () => {
+    const sendGroupImage = vi
+      .fn()
+      .mockRejectedValue(new QqApiError({ status: 400, code: 40054005, message: '消息被去重', body: '{}' }));
+
+    const { handler, calls } = createHarness({
+      imageOutputDir: tempDir,
+      api: {
+        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        sendGroupImage,
+        sendGroupText: vi.fn(async (params: { content: string; msgSeq?: number }) => {
+          calls.texts.push(params);
+          return {};
+        }),
+      } as unknown as MessageHandlingDeps['api'],
+    });
+
+    expect(await handler.handle(message)).toBe('reply-limit');
+    const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
+    expect(seqs).toEqual([1, 2, 3, 4]);
+    // 序号用尽后不能再发文字，否则会撞上平台「被动回复次数超限」
+    expect(calls.texts).toHaveLength(0);
+  });
+
+  it('★ 上传失败时用文字兜底，且不重复占用同一 msg_seq', async () => {
     const uploadMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('分片上传失败'))
       .mockResolvedValue({ fileInfo: 'FILE_INFO_RETRY' });
-    const { calls } = createHarness({ imageOutputDir: tempDir });
-
-    const handler = createHarness({
+    const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       api: {
         uploadGroupFileFromPath: uploadMock,
@@ -224,12 +277,29 @@ describe('GroupMessageHandler', () => {
           return {};
         }),
       } as unknown as MessageHandlingDeps['api'],
-    }).handler;
+    });
 
     expect(await handler.handle(message)).toBe('fallback-sent');
-    // 图片发送失败后释放去重标记，第二次相同事件可以重试成功
-    expect(await handler.handle(message)).toBe('image-sent');
-    expect(calls.images).toHaveLength(1);
+    // 同一 msg_id 的重投事件不再重复处理（避免重复回复）
+    expect(await handler.handle(message)).toBe('duplicate');
+    expect(calls.texts).toHaveLength(1);
+    expect(calls.texts[0]?.msgSeq).toBe(1);
+  });
+
+  it('★ 同一 msg_id 被重投时使用不同的 msg_seq，不再撞平台判重', async () => {
+    // 模拟平台对同一 msg_id 重投：绕过事件级去重，直接重复处理同一事件
+    const dedupe = new MessageDeduplicator();
+    const { handler, calls } = createHarness({ imageOutputDir: tempDir, dedupe });
+    const sameId = { ...message, messageId: 'SAME_ID' };
+
+    expect(await handler.handle(sameId)).toBe('image-sent');
+    // 手动清掉事件级标记，等价于平台把同一 msg_id 又推了一次
+    dedupe.delete(`${sameId.groupOpenid}:${sameId.messageId}#event`);
+    expect(await handler.handle(sameId)).toBe('image-sent');
+
+    const seqs = calls.images.map((call) => (call as { msgSeq: number }).msgSeq);
+    // 关键：两次回复必须用不同 seq，否则平台返回 40054005 消息被去重
+    expect(seqs).toEqual([1, 2]);
   });
 
   it('文字回复也失败时不抛出致命异常', async () => {

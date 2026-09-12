@@ -3,7 +3,9 @@
  *
  * 关键约束（官方文档）：
  * - 被动回复需携带 msg_id，5 分钟内有效，同一 msg_id 最多回复 5 次；
- * - 相同 msg_id 可能重复推送，需要按 msg_id/msg_seq 去重；
+ * - 相同的 msg_id + msg_seq 重复发送会失败（错误码 40054005「消息被去重」），
+ *   因此每条回复都必须认领一个未被占用的 msg_seq；
+ * - 相同 msg_id 可能重复推送，需要做事件级去重；
  * - 富媒体消息需先上传拿到 file_info，再用 msg_type=7 发送。
  */
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -13,13 +15,18 @@ import { formatQuoteTime, formatTurnover } from '../market/format.js';
 import type { MarketProvider } from '../market/types.js';
 import { MAX_TOP_BLOCKS, takeTopBlocks } from '../market/eastmoney.js';
 import { renderPng } from '../render/image.js';
-import type { QqApiClient } from '../qq/api-client.js';
+import { QqApiError, type QqApiClient } from '../qq/api-client.js';
 import type { MessageDeduplicator } from '../qq/dedupe.js';
 import { HELP_TEXT, parseCommand } from './parser.js';
 
-/** 同一 msg_id 最多回复 5 次（平台限制），首次回复用 1，兜底文案用 2。 */
-export const SEQ_PRIMARY = 1;
-export const SEQ_FALLBACK = 2;
+/** 平台限制：同一 msg_id 最多回复 5 次，对应 msg_seq 1..5。 */
+export const MAX_REPLY_SEQ = 5;
+/** 命中「消息被去重」时的最大重试次数。 */
+export const MAX_DEDUPE_RETRIES = 3;
+
+/** 平台错误码：消息被去重 / 被动回复时间或次数超限。 */
+export const ERR_MESSAGE_DEDUPED = 40054005;
+export const ERR_PASSIVE_REPLY_LIMIT = 40034128;
 
 export interface GroupMessage {
   /** 事件体 d.id，用于被动回复 */
@@ -45,7 +52,14 @@ export interface MessageHandlingDeps {
   now?: () => Date;
 }
 
-export type MessageHandlingOutcome = 'image-sent' | 'text-sent' | 'fallback-sent' | 'duplicate' | 'ignored' | 'forbidden';
+export type MessageHandlingOutcome =
+  | 'image-sent'
+  | 'text-sent'
+  | 'fallback-sent'
+  | 'duplicate'
+  | 'ignored'
+  | 'forbidden'
+  | 'reply-limit';
 
 export class GroupMessageHandler {
   private readonly deps: MessageHandlingDeps;
@@ -58,9 +72,11 @@ export class GroupMessageHandler {
 
   async handle(message: GroupMessage): Promise<MessageHandlingOutcome> {
     const { messageId, groupOpenid } = message;
-    const dedupeKey = `${groupOpenid}:${messageId}`;
 
-    if (!this.deps.dedupe.mark(`${dedupeKey}#event`)) {
+    // 事件级去重：平台可能重复推送同一 msg_id。
+    // 注意：命中重复后不释放该标记，重投事件由平台侧与被动回复上限共同兜底；
+    // 释放标记会让同一 msg_seq 被重复占用，反而触发 40054005。
+    if (!this.deps.dedupe.mark(`${this.eventKey(message)}`)) {
       this.logger.warn(`忽略重复事件：group=${groupOpenid} msg_id=${messageId}`);
       return 'duplicate';
     }
@@ -87,7 +103,7 @@ export class GroupMessageHandler {
       case 'ping':
         return this.replyPing(message);
       case 'help':
-        return this.replyText(message, HELP_TEXT, SEQ_PRIMARY);
+        return this.replyHelp(message);
       case 'market':
         return this.replyMarket(message);
       default:
@@ -95,16 +111,87 @@ export class GroupMessageHandler {
     }
   }
 
+  private eventKey(message: GroupMessage): string {
+    return `${message.groupOpenid}:${message.messageId}#event`;
+  }
+
+  /**
+   * 通用被动回复：每次尝试前认领一个未被占用的 msg_seq。
+   * 平台对相同 msg_id + msg_seq 会直接判重（40054005），
+   * 因此失败后必须换序号重试，不能沿用同一个 seq。
+   */
+  private async sendWithSeq(
+    message: GroupMessage,
+    sender: (seq: number) => Promise<unknown>,
+  ): Promise<{ ok: boolean; seq: number | null; error?: unknown }> {
+    const { dedupe, logger } = this.deps;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= MAX_DEDUPE_RETRIES; attempt += 1) {
+      const seq = dedupe.claimSeq(message.messageId, MAX_REPLY_SEQ);
+      if (seq === null) {
+        logger.error(
+          `msg_id=${message.messageId} 的被动回复次数已用尽（上限 ${MAX_REPLY_SEQ} 次），放弃回复`,
+        );
+        return { ok: false, seq: null, ...(lastError === undefined ? {} : { error: lastError }) };
+      }
+
+      try {
+        await sender(seq);
+        return { ok: true, seq };
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableSendError(error)) {
+          return { ok: false, seq, error };
+        }
+        logger.warn(
+          `msg_seq=${seq} 被平台判为重复（${describeError(error).split('\n')[0] ?? ''}），` +
+            `改用下一个 msg_seq 重试（第 ${attempt + 1} 次）`,
+        );
+      }
+    }
+
+    return { ok: false, seq: null, ...(lastError === undefined ? {} : { error: lastError }) };
+  }
+
+  /** 换 msg_seq 重试是否有意义：只有「消息被去重」这类错误值得换序号重试。 */
+  private isRetryableSendError(error: unknown): boolean {
+    return error instanceof QqApiError && error.code === ERR_MESSAGE_DEDUPED;
+  }
+
   private async replyPing(message: GroupMessage): Promise<MessageHandlingOutcome> {
     const now = this.deps.now?.() ?? new Date();
-    const text = `pong · 机器人在线 · ${formatQuoteTime(now)}`;
-    return this.replyText(message, text, SEQ_PRIMARY);
+    return this.replyText(message, `pong · 机器人在线 · ${formatQuoteTime(now)}`);
+  }
+
+  private async replyHelp(message: GroupMessage): Promise<MessageHandlingOutcome> {
+    return this.replyText(message, HELP_TEXT);
+  }
+
+  /**
+   * 发送文字回复：自动认领未被占用的 msg_seq，命中平台判重时换序号重试。
+   */
+  private async replyText(message: GroupMessage, content: string): Promise<MessageHandlingOutcome> {
+    const result = await this.sendWithSeq(message, (seq) =>
+      this.deps.api.sendGroupText({
+        groupOpenid: message.groupOpenid,
+        content,
+        msgId: message.messageId,
+        msgSeq: seq,
+      }),
+    );
+
+    if (result.ok) {
+      this.logger.info(
+        `已发送文字回复：group=${message.groupOpenid} seq=${result.seq} 长度=${content.length}`,
+      );
+      return 'text-sent';
+    }
+    return result.seq === null ? 'reply-limit' : 'ignored';
   }
 
   private async replyMarket(message: GroupMessage): Promise<MessageHandlingOutcome> {
-    const { api, market, logger, dedupe } = this.deps;
-    // 事件级的去重键在 handle() 里已经占用；处理失败时释放它，允许同一事件重试。
-    const attemptKey = `${message.groupOpenid}:${message.messageId}#event`;
+    const { api, market, logger } = this.deps;
 
     try {
       const snapshot = await market.getIndustrySnapshot();
@@ -128,23 +215,36 @@ export class GroupMessageHandler {
         fileType: 1,
       });
 
-      await api.sendGroupImage({
-        groupOpenid: message.groupOpenid,
-        fileInfo: uploaded.fileInfo,
-        msgId: message.messageId,
-        msgSeq: SEQ_PRIMARY,
-      });
-
-      logger.info(
-        `已发送行情图片：group=${message.groupOpenid} 板块=${top.length} 尺寸=${image.width}x${image.height} ` +
-          `大小=${(image.png.length / 1024).toFixed(0)}KB 行情时间=${formatQuoteTime(snapshot.quoteTime)}`,
+      const sent = await this.sendWithSeq(message, (seq) =>
+        api.sendGroupImage({
+          groupOpenid: message.groupOpenid,
+          fileInfo: uploaded.fileInfo,
+          msgId: message.messageId,
+          msgSeq: seq,
+        }),
       );
-      return 'image-sent';
+
+      if (sent.ok) {
+        logger.info(
+          `已发送行情图片：group=${message.groupOpenid} seq=${sent.seq} 板块=${top.length} ` +
+            `尺寸=${image.width}x${image.height} 大小=${(image.png.length / 1024).toFixed(0)}KB ` +
+            `行情时间=${formatQuoteTime(snapshot.quoteTime)}`,
+        );
+        return 'image-sent';
+      }
+
+      if (sent.seq === null) {
+        // 被动回复次数已用尽，无法再补发文字
+        logger.error('被动回复次数已用尽，图片与兜底文案都未发送');
+        return 'reply-limit';
+      }
+
+      const textOutcome = await this.replyText(message, await this.buildFallbackText(sent.error));
+      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
     } catch (error) {
       logger.error(`生成或发送行情图片失败：${describeError(error)}`);
-      dedupe.delete(attemptKey);
-      const fallback = await this.buildFallbackText(error);
-      return this.replyText(message, fallback, SEQ_FALLBACK, 'fallback-sent', true);
+      const textOutcome = await this.replyText(message, await this.buildFallbackText(error));
+      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
     }
   }
 
@@ -170,29 +270,6 @@ export class GroupMessageHandler {
       hint = `图片生成失败，行情数据也不可用：${describeError(error).split('\n')[0] ?? '未知错误'}`;
     }
     return hint;
-  }
-
-  private async replyText(
-    message: GroupMessage,
-    content: string,
-    seq: number,
-    outcome: MessageHandlingOutcome = 'text-sent',
-    throwOnError = false,
-  ): Promise<MessageHandlingOutcome> {
-    try {
-      await this.deps.api.sendGroupText({
-        groupOpenid: message.groupOpenid,
-        content,
-        msgId: message.messageId,
-        msgSeq: seq,
-      });
-      this.logger.info(`已发送文字回复：group=${message.groupOpenid} seq=${seq} 长度=${content.length}`);
-      return outcome;
-    } catch (error) {
-      this.logger.error(`发送文字回复失败：${describeError(error)}`);
-      if (throwOnError) throw error;
-      return 'ignored';
-    }
   }
 
   /** 落盘调试图片，便于排查渲染问题；返回文件路径。 */
