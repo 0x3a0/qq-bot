@@ -9,7 +9,6 @@ import { colorForChange, escapeXml, readableTextColor, truncateToWidth } from '.
 import { layoutTreemap, type TreemapTile } from './treemap.js';
 import type { MarketBlock } from '../market/types.js';
 import { formatChangePercent, formatSnapshotSubtitle, summarizeBlocks } from '../market/format.js';
-
 export const DEFAULT_WIDTH = 1200;
 export const DEFAULT_HEIGHT = 900;
 
@@ -18,6 +17,10 @@ export interface RenderImageOptions {
   source: string;
   quoteTime: Date | null;
   fetchedAt: Date;
+  /** 主标题，如「行业板块主力流入Top25」 */
+  title: string;
+  /** 指标名，用于页脚说明，如「主力流入」 */
+  metricLabel: string;
   width?: number;
   height?: number;
   fontFiles?: string[];
@@ -51,8 +54,8 @@ const THEME: Theme = {
   footerText: '#9aa4b8',
 };
 
-/** 头部只放一行数据说明（数据源 + 行情时间 + 涨跌家数），不再有标题。 */
-const HEADER_HEIGHT = 62;
+/** 头部两行：主标题（板块类型 + 指标 + Top 数量）+ 副标题（数据源 + 行情时间）。 */
+const HEADER_HEIGHT = 92;
 const FOOTER_HEIGHT = 56;
 const MARGIN = 20;
 const TILE_PADDING = 4;
@@ -90,7 +93,6 @@ export function renderSvg(options: RenderImageOptions): { svg: string; tiles: Tr
       source: options.source,
       quoteTime: options.quoteTime,
       fetchedAt: options.fetchedAt,
-      blockCount: tiles.length,
     },
     options.now ? { now: options.now } : {},
   );
@@ -104,10 +106,13 @@ export function renderSvg(options: RenderImageOptions): { svg: string; tiles: Tr
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <rect x="0" y="0" width="${width}" height="${height}" fill="${THEME.background}"/>
   <rect x="0" y="0" width="${width}" height="${HEADER_HEIGHT}" fill="${THEME.headerBackground}"/>
-  <text x="${MARGIN}" y="${HEADER_HEIGHT / 2 + 7}" font-family="sans-serif" font-size="20" fill="${
+  <text x="${MARGIN}" y="42" font-family="sans-serif" font-size="30" font-weight="700" fill="${
     THEME.headerText
+  }">${escapeXml(options.title)}</text>
+  <text x="${MARGIN}" y="70" font-family="sans-serif" font-size="17" fill="${
+    THEME.headerSubText
   }">${escapeXml(subtitle)}</text>
-  <text x="${width - MARGIN}" y="${HEADER_HEIGHT / 2 + 6}" text-anchor="end" font-family="sans-serif" font-size="19" fill="${
+  <text x="${width - MARGIN}" y="42" text-anchor="end" font-family="sans-serif" font-size="20" fill="${
     THEME.headerSubText
   }">${escapeXml(statsText)}</text>
   <g transform="translate(${MARGIN}, ${HEADER_HEIGHT})">
@@ -117,7 +122,7 @@ ${tileMarkup}
   ${legend}
   <text x="${width - MARGIN}" y="${height - FOOTER_HEIGHT + 34}" text-anchor="end" font-family="sans-serif" font-size="17" fill="${
     THEME.footerText
-  }">矩形面积＝成交额，颜色＝涨跌幅</text>
+  }">${escapeXml(`矩形面积＝${options.metricLabel}，颜色＝涨跌幅`)}</text>
 </svg>`;
 
   return { svg, tiles, width, height };

@@ -6,33 +6,50 @@ import { GroupMessageHandler, type MessageHandlingDeps } from '../src/commands/b
 import { createLogger } from '../src/logger.js';
 import { QqApiError } from '../src/qq/api-client.js';
 import { MessageDeduplicator } from '../src/qq/dedupe.js';
-import type { MarketBlock, MarketSnapshot } from '../src/market/types.js';
+import type { FundFlowSnapshot, SectorFundFlow, SectorKind } from '../src/market/fundflow-types.js';
 
 const logger = createLogger('test');
 logger.debug = () => {};
 logger.info = () => {};
 logger.warn = () => {};
+logger.error = () => {};
 
-const blocks: MarketBlock[] = Array.from({ length: 35 }, (_, index) => ({
-  code: `BK${index}`,
-  name: `板块${index}`,
-  changePercent: index % 2 === 0 ? 1.5 : -1.2,
-  turnover: (35 - index) * 1e9,
-  quoteTimestamp: 1_752_000_000,
-}));
+/** 构造一个板块资金流快照；主力净额从 35e8 递减，保证前 25 名都为正。 */
+function makeSectors(prefix: string): SectorFundFlow[] {
+  return Array.from({ length: 35 }, (_, index) => ({
+    code: `${prefix}${index}`,
+    name: `${prefix}板块${index}`,
+    changePercent: index % 2 === 0 ? 1.5 : -1.2,
+    mainNet: (35 - index) * 1e8,
+    mainNetRatio: 2.5,
+    superNet: (35 - index) * 0.8e8,
+    superNetRatio: 2,
+    bigNet: (35 - index) * 0.2e8,
+    bigNetRatio: 0.5,
+    midNet: -(35 - index) * 0.6e8,
+    midNetRatio: -1.5,
+    smallNet: -(35 - index) * 0.4e8,
+    smallNetRatio: -1,
+  }));
+}
 
-const snapshot: MarketSnapshot = {
-  market: 'A股',
-  source: '东方财富',
-  quoteTime: new Date(1_752_000_000 * 1000),
-  fetchedAt: new Date(),
-  blocks,
-};
+function makeSnapshot(kind: SectorKind): FundFlowSnapshot {
+  return {
+    kind,
+    period: 'today',
+    source: '东方财富',
+    quoteTime: new Date(1_752_000_000 * 1000),
+    fetchedAt: new Date(),
+    sectors: makeSectors(kind === 'industry' ? 'HY' : 'GN'),
+  };
+}
 
 interface RecordedCalls {
-  uploads: unknown[];
-  images: unknown[];
+  uploads: { fileName?: string }[];
+  images: { fileInfo: string; msgSeq: number; msgId: string }[];
   texts: { content: string; msgSeq?: number }[];
+  /** 各事件的相对顺序，用于断言「先渲染完先发」 */
+  order: string[];
 }
 
 function createHarness(overrides: Partial<MessageHandlingDeps> = {}): {
@@ -40,26 +57,29 @@ function createHarness(overrides: Partial<MessageHandlingDeps> = {}): {
   calls: RecordedCalls;
   deps: MessageHandlingDeps;
 } {
-  const calls: RecordedCalls = { uploads: [], images: [], texts: [] };
+  const calls: RecordedCalls = { uploads: [], images: [], texts: [], order: [] };
 
   const api = {
-    uploadGroupFileFromPath: vi.fn(async (params: unknown) => {
+    uploadGroupFileFromPath: vi.fn(async (params: { fileName?: string }) => {
       calls.uploads.push(params);
-      return { fileInfo: 'FILE_INFO_1' };
+      calls.order.push(`upload:${params.fileName ?? ''}`);
+      return { fileInfo: `FILE_INFO_${params.fileName ?? ''}` };
     }),
-    sendGroupImage: vi.fn(async (params: unknown) => {
+    sendGroupImage: vi.fn(async (params: { fileInfo: string; msgSeq: number; msgId: string }) => {
       calls.images.push(params);
+      calls.order.push(`send:${params.fileInfo}`);
       return { id: 'ROBOT1.0_sent' };
     }),
     sendGroupText: vi.fn(async (params: { content: string; msgSeq?: number }) => {
       calls.texts.push(params);
+      calls.order.push('sendText');
       return { id: 'ROBOT1.0_text' };
     }),
   };
 
   const deps: MessageHandlingDeps = {
     api: api as unknown as MessageHandlingDeps['api'],
-    market: { getIndustrySnapshot: async () => snapshot },
+    fundflow: { getSectorFundFlow: async (kind: SectorKind) => makeSnapshot(kind) },
     logger,
     dedupe: new MessageDeduplicator(),
     imageOutputDir: undefined,
@@ -94,11 +114,25 @@ afterEach(async () => {
 });
 
 describe('GroupMessageHandler', () => {
-  it('★ 文字榜单在图片渲染之前发出（取数完成即发，不必等渲染与上传）', async () => {
-    const order: string[] = [];
+  it('★ 大盘：发送两张图片（行业 + 概念），各用递增的 msg_seq', async () => {
+    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
+    const outcome = await handler.handle(message);
 
-    const renderer = vi.fn((_options: unknown) => {
-      order.push('render');
+    expect(outcome).toBe('images-sent');
+    expect(calls.images).toHaveLength(2);
+    expect(calls.uploads).toHaveLength(2);
+    // 不再发送任何文字（数据全部通过图片传达）
+    expect(calls.texts).toHaveLength(0);
+
+    const seqs = calls.images.map((call) => call.msgSeq);
+    expect(seqs).toEqual([1, 2]);
+    expect(calls.images.every((call) => call.msgId === 'ROBOT1.0_msg')).toBe(true);
+  });
+
+  it('★ 两张图的渲染参数分别标注行业 / 概念板块', async () => {
+    const options: { title: string; metricLabel: string; blocks: unknown[] }[] = [];
+    const renderer = vi.fn((opts: unknown) => {
+      options.push(opts as (typeof options)[number]);
       return {
         png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
         svg: '<svg/>',
@@ -111,150 +145,64 @@ describe('GroupMessageHandler', () => {
     const { handler } = createHarness({
       imageOutputDir: tempDir,
       renderer: renderer as unknown as MessageHandlingDeps['renderer'],
-      api: {
-        uploadGroupFileFromPath: vi.fn(async () => {
-          order.push('upload');
-          return { fileInfo: 'F' };
-        }),
-        sendGroupImage: vi.fn(async () => {
-          order.push('sendImage');
-          return {};
-        }),
-        sendGroupText: vi.fn(async () => {
-          order.push('sendText');
-          return {};
-        }),
-      } as unknown as MessageHandlingDeps['api'],
     });
+    await handler.handle(message);
 
-    expect(await handler.handle(message)).toBe('image-sent');
-    expect(order).toEqual(['sendText', 'render', 'upload', 'sendImage']);
+    expect(options).toHaveLength(2);
+    const titles = options.map((opt) => opt.title).sort();
+    expect(titles).toEqual(['概念板块主力流入Top25', '行业板块主力流入Top25']);
+    expect(options.every((opt) => opt.metricLabel === '主力流入')).toBe(true);
+    // 每个板块共 35 个，取前 25
+    expect(options.every((opt) => opt.blocks.length === 25)).toBe(true);
   });
 
-  it('★ 取数失败时不会先发榜单，只发一条错误说明', async () => {
-    const order: string[] = [];
-    const renderer = vi.fn(() => {
-      order.push('render');
-      throw new Error('不应被调用');
-    });
+  it('★ 两条链路并发：先渲染完的那张先发（不等待另一张）', async () => {
+    const events: string[] = [];
+    const kinds: string[] = [];
 
+    // 用真实异步延迟控制完成顺序：概念链路快，行业链路慢
     const { handler } = createHarness({
       imageOutputDir: tempDir,
-      renderer: renderer as unknown as MessageHandlingDeps['renderer'],
-      market: {
-        getIndustrySnapshot: async () => {
-          throw new Error('东方财富接口 HTTP 502');
+      fundflow: {
+        getSectorFundFlow: async (kind: SectorKind) => {
+          await new Promise((resolve) => setTimeout(resolve, kind === 'industry' ? 60 : 0));
+          return makeSnapshot(kind);
         },
       },
-      api: {
-        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
-        sendGroupImage: vi.fn(async () => ({})),
-        sendGroupText: vi.fn(async (params: { content: string }) => {
-          order.push(`sendText:${params.content.slice(0, 6)}`);
-          return {};
-        }),
-      } as unknown as MessageHandlingDeps['api'],
-    });
-
-    expect(await handler.handle(message)).toBe('fallback-sent');
-    expect(order).toEqual(['sendText:行业板块数据']);
-    expect(renderer).not.toHaveBeenCalled();
-  });
-
-  it('★ 文字榜单已送达后图片失败，只补一条失败说明（不重发榜单）', async () => {
-    const sentTexts: string[] = [];
-    const { handler } = createHarness({
-      imageOutputDir: tempDir,
-      renderer: (() => {
-        throw new Error('resvg 渲染失败');
+      renderer: ((opts: { title: string }) => {
+        kinds.push(opts.title);
+        return {
+          png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+          svg: '<svg/>',
+          width: 1200,
+          height: 900,
+          tiles: [],
+        };
       }) as unknown as MessageHandlingDeps['renderer'],
       api: {
         uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
-        sendGroupImage: vi.fn(async () => ({})),
-        sendGroupText: vi.fn(async (params: { content: string }) => {
-          sentTexts.push(params.content);
+        sendGroupImage: vi.fn(async (params: { fileInfo: string; msgSeq: number; msgId: string }) => {
+          events.push(`send@${params.msgSeq}`);
           return {};
         }),
+        sendGroupText: vi.fn(async () => ({})),
       } as unknown as MessageHandlingDeps['api'],
     });
 
-    expect(await handler.handle(message)).toBe('fallback-sent');
-    expect(sentTexts).toHaveLength(2);
-    expect(sentTexts[0]).toContain('行业板块成交额 TOP25');
-    expect(sentTexts[1]).toContain('图片生成失败');
-    expect(sentTexts[1]).not.toContain('行业板块成交额 TOP25');
-  });
-
-  it('★ 大盘指令：先发文字 TOP25 榜单，再发图片（msg_seq 递增）', async () => {
-    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
-    const outcome = await handler.handle(message);
-
-    expect(outcome).toBe('image-sent');
-    expect(calls.uploads).toHaveLength(1);
-    expect(calls.images).toHaveLength(1);
-    // 先文字、后图片
-    expect(calls.texts).toHaveLength(1);
-
-    const textCall = calls.texts[0] as { content: string; msgSeq: number };
-    expect(textCall.msgSeq).toBe(1);
-    expect(textCall.content).toContain('行业板块成交额 TOP25');
-    expect(textCall.content).toContain(' 1. 板块0 +1.50%');
-    expect(textCall.content).toContain('25. 板块24');
-    expect(textCall.content.split('\n').filter((line) => /^\s*\d+\. /.test(line))).toHaveLength(25);
-
-    const imageCall = calls.images[0] as { fileInfo: string; msgId: string; msgSeq: number; groupOpenid: string };
-    expect(imageCall.fileInfo).toBe('FILE_INFO_1');
-    expect(imageCall.msgId).toBe('ROBOT1.0_msg');
-    expect(imageCall.msgSeq).toBe(2);
-    expect(imageCall.groupOpenid).toBe('GROUP_OPENID');
-  });
-
-  it('文字榜单内容按成交额降序且带涨跌幅与成交额', async () => {
-    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
-    await handler.handle(message);
-    const lines = (calls.texts[0] as { content: string }).content.split('\n');
-    // 第 1 名成交额 35e9 = 350亿，第 2 名 34e9 = 340亿；第 25 名 11e9 = 110亿
-    expect(lines.find((line) => line.startsWith(' 1. '))).toBe(' 1. 板块0 +1.50% 350亿');
-    expect(lines.find((line) => line.startsWith(' 2. '))).toBe(' 2. 板块1 -1.20% 340亿');
-    expect(lines.find((line) => line.startsWith('25. '))).toBe('25. 板块24 +1.50% 110亿');
-    // 第 26 名不应出现在榜单里
-    expect(lines.find((line) => line.startsWith('26. '))).toBeUndefined();
-  });
-
-  it('上传时使用 file_type=1（图片）', async () => {
-    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
-    await handler.handle(message);
-    const uploadCall = calls.uploads[0] as { fileType: number; fileName: string };
-    expect(uploadCall.fileType).toBe(1);
-    expect(uploadCall.fileName).toMatch(/\.png$/);
-  });
-
-  it('渲染时只取成交额前 25 个板块', async () => {
-    const renderer = vi.fn((_options: unknown) => ({
-      png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
-      svg: '<svg/>',
-      width: 1200,
-      height: 900,
-      tiles: [],
-    }));
-    const { handler } = createHarness({
-      imageOutputDir: tempDir,
-      renderer: renderer as unknown as MessageHandlingDeps['renderer'],
-    });
-    await handler.handle(message);
-    const options = renderer.mock.calls[0]?.[0] as unknown as { blocks: MarketBlock[]; source: string };
-    expect(options.blocks).toHaveLength(25);
-    expect(options.source).toBe('东方财富');
+    expect(await handler.handle(message)).toBe('images-sent');
+    // 概念（快）先渲染完成并先发，拿到 seq=1；行业（慢）随后用 seq=2
+    expect(kinds).toEqual(['概念板块主力流入Top25', '行业板块主力流入Top25']);
+    expect(events).toEqual(['send@1', 'send@2']);
   });
 
   it('重复事件不会重复发图', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
-    expect(await handler.handle(message)).toBe('image-sent');
+    expect(await handler.handle(message)).toBe('images-sent');
     expect(await handler.handle(message)).toBe('duplicate');
-    expect(calls.images).toHaveLength(1);
+    expect(calls.images).toHaveLength(1 * 2);
   });
 
-  it('ping 指令回复文本且不调用图片接口', async () => {
+  it('ping 指令仍回复文本且不调用图片接口', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     const outcome = await handler.handle({ ...message, content: 'ping' });
     expect(outcome).toBe('text-sent');
@@ -286,11 +234,11 @@ describe('GroupMessageHandler', () => {
     expect(calls.images).toHaveLength(0);
   });
 
-  it('行情数据失败时只发一条错误说明（无数据可发榜单）', async () => {
+  it('两类数据都失败时给一条错误说明', async () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
-      market: {
-        getIndustrySnapshot: async () => {
+      fundflow: {
+        getSectorFundFlow: async () => {
           throw new Error('东方财富接口 HTTP 502');
         },
       },
@@ -299,24 +247,49 @@ describe('GroupMessageHandler', () => {
     expect(outcome).toBe('fallback-sent');
     expect(calls.images).toHaveLength(0);
     expect(calls.texts).toHaveLength(1);
-    expect(calls.texts[0]?.content).toContain('获取失败');
-    expect(calls.texts[0]?.content).not.toContain('TOP25');
-    expect(calls.texts[0]?.msgSeq).toBe(1);
+    expect(calls.texts[0]?.content).toContain('板块资金流数据获取失败');
+    expect(calls.texts[0]?.content).toContain('行业板块');
+    expect(calls.texts[0]?.content).toContain('概念板块');
   });
 
-  it('渲染失败时：榜单已送达，补一条失败说明', async () => {
+  it('★ 只有一类失败时仍然发送成功的那张（partial）', async () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
-      renderer: (() => {
-        throw new Error('resvg 渲染失败');
-      }) as unknown as MessageHandlingDeps['renderer'],
+      fundflow: {
+        getSectorFundFlow: async (kind: SectorKind) => {
+          if (kind === 'concept') throw new Error('概念接口超时');
+          return makeSnapshot(kind);
+        },
+      },
     });
-    const outcome = await handler.handle(message);
-    expect(outcome).toBe('fallback-sent');
-    expect(calls.texts).toHaveLength(2);
-    expect(calls.texts[0]?.content).toContain('行业板块成交额 TOP25');
-    expect(calls.texts[1]?.content).toContain('图片生成失败');
-    expect(calls.images).toHaveLength(0);
+
+    expect(await handler.handle(message)).toBe('partial');
+    expect(calls.images).toHaveLength(1);
+    expect(calls.images[0]?.fileInfo).toContain('industry');
+    // 有图送达就不发文字
+    expect(calls.texts).toHaveLength(0);
+  });
+
+  it('渲染失败时另一张仍能发出', async () => {
+    const renderer = vi.fn((opts: { title: string }) => {
+      if (opts.title.includes('概念')) throw new Error('resvg 渲染失败');
+      return {
+        png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        svg: '<svg/>',
+        width: 1200,
+        height: 900,
+        tiles: [],
+      };
+    });
+
+    const { handler, calls } = createHarness({
+      imageOutputDir: tempDir,
+      renderer: renderer as unknown as MessageHandlingDeps['renderer'],
+    });
+
+    expect(await handler.handle(message)).toBe('partial');
+    expect(calls.images).toHaveLength(1);
+    expect(calls.images[0]?.fileInfo).toContain('industry');
   });
 
   it('★ 发图被判重（40054005）时换 msg_seq 重试，最终发图成功', async () => {
@@ -328,9 +301,9 @@ describe('GroupMessageHandler', () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       api: {
-        uploadGroupFileFromPath: vi.fn(async (params: unknown) => {
+        uploadGroupFileFromPath: vi.fn(async (params: { fileName?: string }) => {
           calls.uploads.push(params);
-          return { fileInfo: 'FILE_INFO_1' };
+          return { fileInfo: `F_${params.fileName ?? ''}` };
         }),
         sendGroupImage,
         sendGroupText: vi.fn(async (params: { content: string; msgSeq?: number }) => {
@@ -340,50 +313,44 @@ describe('GroupMessageHandler', () => {
       } as unknown as MessageHandlingDeps['api'],
     });
 
-    expect(await handler.handle(message)).toBe('image-sent');
-    expect(sendGroupImage).toHaveBeenCalledTimes(2);
+    expect(await handler.handle(message)).toBe('images-sent');
+    // 第一张图先被判重（seq=1），换 seq=2 成功；第二张接着用 seq=3
     const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
-    // 文字榜单占用 seq=1，图片从 seq=2 开始；重试必须换 seq，不能沿用被平台判重的那个
-    expect(seqs).toEqual([2, 3]);
-    // 只发了文字榜单（seq=1），没有额外的兜底文案
-    expect(calls.texts).toHaveLength(1);
+    expect(seqs).toEqual([1, 2, 3]);
   });
 
-  it('★ 连续判重时持续换 seq，用尽后放弃且不再补发文字', async () => {
+  it('★ 判重持续失败时始终换新 seq，直到用完 5 次上限', async () => {
     const sendGroupImage = vi
       .fn()
       .mockRejectedValue(new QqApiError({ status: 400, code: 40054005, message: '消息被去重', body: '{}' }));
 
-    const { handler, calls } = createHarness({
+    const { handler } = createHarness({
       imageOutputDir: tempDir,
       api: {
         uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
         sendGroupImage,
-        sendGroupText: vi.fn(async (params: { content: string; msgSeq?: number }) => {
-          calls.texts.push(params);
-          return {};
-        }),
+        sendGroupText: vi.fn(async () => ({})),
       } as unknown as MessageHandlingDeps['api'],
     });
 
     expect(await handler.handle(message)).toBe('reply-limit');
     const seqs = sendGroupImage.mock.calls.map((call) => (call[0] as { msgSeq: number }).msgSeq);
-    // seq=1 被文字榜单占用，图片可用 2..5，用尽后放弃
-    expect(seqs).toEqual([2, 3, 4, 5]);
-    // 序号用尽后不能再发文字，否则会撞上平台「被动回复次数超限」
-    expect(calls.texts).toHaveLength(1);
+    // 从不复用已认领的序号（复用必被判重），因此都是全新的 seq
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(Math.max(...seqs)).toBeLessThanOrEqual(5);
   });
 
-  it('★ 上传失败时：榜单已送达，补一条失败说明，且不重复占用 msg_seq', async () => {
-    const uploadMock = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('分片上传失败'))
-      .mockResolvedValue({ fileInfo: 'FILE_INFO_RETRY' });
+  it('上传失败时另一张仍能发出', async () => {
+    const uploadMock = vi.fn(async (params: { fileName?: string }) => {
+      if (params.fileName?.includes('concept')) throw new Error('分片上传失败');
+      return { fileInfo: 'FILE_INFO_OK' };
+    });
+
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       api: {
         uploadGroupFileFromPath: uploadMock,
-        sendGroupImage: vi.fn(async (params: unknown) => {
+        sendGroupImage: vi.fn(async (params: { fileInfo: string; msgSeq: number; msgId: string }) => {
           calls.images.push(params);
           return {};
         }),
@@ -394,31 +361,9 @@ describe('GroupMessageHandler', () => {
       } as unknown as MessageHandlingDeps['api'],
     });
 
-    expect(await handler.handle(message)).toBe('fallback-sent');
-    // 榜单 + 失败说明
-    expect(calls.texts).toHaveLength(2);
-    expect(calls.texts[0]?.msgSeq).toBe(1);
-    expect(calls.texts[1]?.msgSeq).toBe(2);
-    // 同一 msg_id 的重投事件不再重复处理（避免重复回复）
-    expect(await handler.handle(message)).toBe('duplicate');
-    expect(calls.texts).toHaveLength(2);
-    expect(calls.images).toHaveLength(0);
-  });
-
-  it('★ 同一 msg_id 被重投时使用不同的 msg_seq，不再撞平台判重', async () => {
-    // 模拟平台对同一 msg_id 重投：绕过事件级去重，直接重复处理同一事件
-    const dedupe = new MessageDeduplicator();
-    const { handler, calls } = createHarness({ imageOutputDir: tempDir, dedupe });
-    const sameId = { ...message, messageId: 'SAME_ID' };
-
-    expect(await handler.handle(sameId)).toBe('image-sent');
-    // 手动清掉事件级标记，等价于平台把同一 msg_id 又推了一次
-    dedupe.delete(`${sameId.groupOpenid}:${sameId.messageId}#event`);
-    expect(await handler.handle(sameId)).toBe('image-sent');
-
-    const seqs = calls.images.map((call) => (call as { msgSeq: number }).msgSeq);
-    // 每次回复两条（文字+图片）：第 1 次用 1/2，第 2 次用 3/4
-    expect(seqs).toEqual([2, 4]);
+    expect(await handler.handle(message)).toBe('partial');
+    expect(calls.images).toHaveLength(1);
+    expect(calls.texts).toHaveLength(0);
   });
 
   it('文字回复也失败时不抛出致命异常', async () => {

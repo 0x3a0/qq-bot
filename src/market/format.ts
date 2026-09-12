@@ -40,6 +40,21 @@ export function formatTurnover(turnover: number): string {
   return turnover.toFixed(0);
 }
 
+/**
+ * 资金净额格式化为带符号的「亿元」，例如 `+47.41亿` / `-12.30亿` / `+5200万`。
+ * 资金流数据有正负（净流入 / 净流出），与成交额格式化不同，需要保留符号。
+ */
+export function formatAmount(yuan: number): string {
+  if (!Number.isFinite(yuan)) return '-';
+  if (Math.abs(yuan) < 1e4) return `${yuan > 0 ? '+' : ''}${yuan.toFixed(0)}元`;
+  if (Math.abs(yuan) < 1e8) {
+    const wan = yuan / 1e4;
+    return `${wan > 0 ? '+' : ''}${wan.toFixed(0)}万`;
+  }
+  const yi = yuan / 1e8;
+  return `${yi > 0 ? '+' : ''}${yi.toFixed(2)}亿`;
+}
+
 /** 涨跌幅格式化为带符号百分数。 */
 export function formatChangePercent(changePercent: number): string {
   if (!Number.isFinite(changePercent)) return '-';
@@ -53,14 +68,26 @@ export interface MarketSummaryOptions {
 }
 
 /**
- * 生成图片头部的数据说明文字，例如：
- * 东方财富 · 行业板块成交额 TOP25 · 行情时间 15:00
+ * 生成图片主标题，例如「行业板块主力流入Top25」。
+ * 板块类型决定主体，指标与数量跟在后面（用户指定的固定文案格式）。
+ */
+export function formatImageTitle(params: {
+  kindLabel: string;
+  metricLabel: string;
+  blockCount: number;
+}): string {
+  return `${params.kindLabel}${params.metricLabel}Top${params.blockCount}`;
+}
+
+/**
+ * 生成图片副标题（数据源 + 行情时间），例如：
+ * 东方财富 · 行情时间 15:00
  *
  * 当行情时间不是今天时（周末/节假日/休市），在时间前带上完整日期（YYYY-MM-DD），
  * 避免把上一交易日的收盘数据误读成实时行情。
  */
 export function formatSnapshotSubtitle(
-  params: { source: string; quoteTime: Date | null; fetchedAt: Date; blockCount: number },
+  params: { source: string; quoteTime: Date | null; fetchedAt: Date },
   options: MarketSummaryOptions = {},
 ): string {
   const now = options.now ?? new Date();
@@ -73,7 +100,7 @@ export function formatSnapshotSubtitle(
     timeText = `${shifted.getUTCFullYear()}-${timeText}`;
   }
 
-  return `${params.source} · 行业板块成交额 TOP${params.blockCount} · ${label} ${timeText}`;
+  return `${params.source} · ${label} ${timeText}`;
 }
 
 /** 生成涨跌幅概览，例如「上涨 12 / 下跌 7」。 */
@@ -87,48 +114,4 @@ export function summarizeBlocks(blocks: MarketBlock[]): { up: number; down: numb
     else flat += 1;
   }
   return { up, down, flat };
-}
-
-/**
- * 生成成交额 TOP N 的文字榜单，用于在图片之前先发一条文本数据。
- * 单行格式：`序号. 板块名 涨跌幅 成交额`，例如：
- * ` 1. 电子 -1.10% 4886亿`
- * 每行约占 20 个字符，30 行总额远小于平台文本上限。
- */
-export function formatBlockRanking(
-  blocks: MarketBlock[],
-  options: { title?: string; footer?: string } = {},
-): string {
-  const lines = blocks.map((block, index) => {
-    const rank = String(index + 1).padStart(2, ' ');
-    return `${rank}. ${block.name} ${formatChangePercent(block.changePercent)} ${formatTurnover(block.turnover)}`;
-  });
-
-  const content = [options.title, ...lines, options.footer].filter(
-    (line): line is string => typeof line === 'string' && line.length > 0,
-  );
-  return content.join('\n');
-}
-
-/** 文字榜单的标题，例如「行业板块成交额 TOP25」。 */
-export function formatRankingTitle(blockCount: number): string {
-  return `行业板块成交额 TOP${blockCount}`;
-}
-
-/** 文字榜单的落款，例如「东方财富 · 行情时间 09-11 15:39」。 */
-export function formatRankingFooter(params: {
-  source: string;
-  quoteTime: Date | null;
-  fetchedAt: Date;
-  now?: Date;
-}): string {
-  const now = params.now ?? new Date();
-  const time = params.quoteTime ?? now;
-  const label = params.quoteTime ? '行情时间' : '抓取时间';
-  let timeText = formatQuoteTime(time);
-  if (params.quoteTime && isPreviousTradingDay(params.quoteTime, now)) {
-    const shifted = new Date(params.quoteTime.getTime() + SHANGHAI_OFFSET_MS);
-    timeText = `${shifted.getUTCFullYear()}-${timeText}`;
-  }
-  return `${params.source} · ${label} ${timeText}`;
 }

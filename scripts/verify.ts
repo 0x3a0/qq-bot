@@ -2,8 +2,8 @@
  * 自检入口：按子命令执行各类验证。
  *
  *   npm run verify                 # 等价于 verify all（不含 upload）
- *   npm run verify -- market       # 行情取数与排序（无需 QQ 凭据）
- *   npm run verify -- render       # 本地渲染一张真实数据的 PNG（无需 QQ 凭据）
+ *   npm run verify -- fundflow     # 行业 / 概念板块资金流取数与校验（无需 QQ 凭据）
+ *   npm run verify -- render       # 本地渲染两张 PNG（行业 + 概念，无需 QQ 凭据）
  *   npm run verify -- qq           # Access Token + Gateway 接入点
  *   npm run verify -- inbound 60   # ★ 监听并打印群 @ 事件，最多等 60 秒
  *   npm run verify -- inbound 60 --reset   # 同上，先清理会话缓存
@@ -17,8 +17,7 @@ import { join } from 'node:path';
 import { DEFAULT_INTENTS, loadConfig, type AppConfig } from '../src/config.js';
 import { loadDotEnv } from '../src/env.js';
 import { createLogger, describeError, setLogLevel } from '../src/logger.js';
-import { EastmoneyIndustryProvider, MAX_TOP_BLOCKS, takeTopBlocks } from '../src/market/eastmoney.js';
-import { formatChangePercent, formatQuoteTime, formatTurnover, summarizeBlocks } from '../src/market/format.js';
+import { formatChangePercent, formatAmount, formatImageTitle, formatQuoteTime, summarizeBlocks } from '../src/market/format.js';
 import { EastmoneyFundFlowProvider } from '../src/market/fundflow.js';
 import {
   FUND_FLOW_PERIOD_LABEL,
@@ -27,6 +26,8 @@ import {
   type FundFlowPeriod,
   type SectorKind,
 } from '../src/market/fundflow-types.js';
+import { MAX_TOP_SECTORS, takeTopBlocks } from '../src/market/sectors.js';
+import { METRIC_LABEL } from '../src/commands/bot.js';
 import { QqApiClient, MD5_10M_BYTES, md5 } from '../src/qq/api-client.js';
 import { GatewayClient } from '../src/qq/gateway.js';
 import { SessionStore } from '../src/qq/session-store.js';
@@ -34,21 +35,20 @@ import { TokenManager } from '../src/qq/token.js';
 import { CLOSE_CODE_MEANING, type GroupAtMessageCreateData } from '../src/qq/types.js';
 import { renderPng } from '../src/render/image.js';
 
-type SubCommand = 'all' | 'market' | 'fundflow' | 'render' | 'qq' | 'inbound' | 'upload';
+type SubCommand = 'all' | 'fundflow' | 'render' | 'qq' | 'inbound' | 'upload';
 
 const USAGE = [
   '用法：npm run verify -- <子命令> [参数]',
   '',
-  '  all               依次执行 market + fundflow + render + qq（默认）',
-  '  market            行情取数与成交额排序自检',
+  '  all               依次执行 fundflow + render + qq（默认）',
   '  fundflow [周期]   行业 / 概念板块资金流自检（周期 today|5d|10d，默认 today）',
-  '  render            渲染一张真实数据的 PNG',
+  '  render            渲染两张真实数据的 PNG（行业 + 概念）',
   '  qq                校验 Access Token 与 Gateway 接入点',
   '  inbound [秒数]    监听群 @ 事件（默认 300 秒），可加 --reset 清理会话缓存',
   '  upload <group_openid> [图片路径]   富媒体分片上传诊断',
 ].join('\n');
 
-/** 加载配置；渲染/行情自检不需要 QQ 凭据，缺失时使用占位值。 */
+/** 加载配置；渲染/资金流自检不需要 QQ 凭据，缺失时使用占位值。 */
 function loadAppConfig(options: { requireCredentials: boolean }): AppConfig {
   if (options.requireCredentials) return loadConfig();
   return loadConfig({
@@ -58,48 +58,10 @@ function loadAppConfig(options: { requireCredentials: boolean }): AppConfig {
   });
 }
 
-function createProvider(logger: ReturnType<typeof createLogger>) {
-  return new EastmoneyIndustryProvider({ logger, cacheTtlMs: 0 });
-}
-
-// ---------------------------------------------------------------------------
-// market：行情取数与排序
-// ---------------------------------------------------------------------------
-async function runMarket(): Promise<void> {
-  const logger = createLogger('verify:market');
-  const provider = createProvider(logger);
-  const snapshot = await provider.getIndustrySnapshot();
-  const top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
-
-  console.log(`\n来源：${snapshot.source}`);
-  console.log(`行情时间：${formatQuoteTime(snapshot.quoteTime)}`);
-  console.log(`行业板块总数：${snapshot.blocks.length}`);
-  console.log(`成交额 TOP${MAX_TOP_BLOCKS}：`);
-  for (const [index, block] of top.entries()) {
-    console.log(
-      `${String(index + 1).padStart(2, ' ')}. ${block.name.padEnd(8, '　')} ` +
-        `${formatChangePercent(block.changePercent).padStart(8)} ${formatTurnover(block.turnover).padStart(9)}`,
-    );
-  }
-
-  const sorted = top.every((block, index) => index === 0 || (top[index - 1]?.turnover ?? 0) >= block.turnover);
-  const stats = summarizeBlocks(top);
-  console.log(`\n按成交额降序：${sorted ? '通过' : '失败'}`);
-  console.log(`涨跌统计：上涨 ${stats.up} / 下跌 ${stats.down} / 平盘 ${stats.flat}`);
-  if (!sorted) process.exitCode = 1;
-}
-
 // ---------------------------------------------------------------------------
 // fundflow：行业 / 概念板块资金流
 // ---------------------------------------------------------------------------
 const FUND_FLOW_TOP = 10;
-
-/** 把「元」格式化成带符号的「亿元」。 */
-function formatYi(yuan: number): string {
-  const yi = yuan / 1e8;
-  const sign = yi > 0 ? '+' : '';
-  return `${sign}${yi.toFixed(2)}亿`;
-}
 
 async function runFundFlow(args: string[]): Promise<void> {
   const period = (args[0] ?? 'today') as FundFlowPeriod;
@@ -139,9 +101,9 @@ async function runFundFlow(args: string[]): Promise<void> {
       console.log(
         `${String(index + 1).padStart(3)}. ${sector.name.padEnd(12, '　')} ` +
           `${formatChangePercent(sector.changePercent).padStart(8)} ` +
-          `${formatYi(sector.mainNet).padStart(12)} ` +
+          `${formatAmount(sector.mainNet).padStart(12)} ` +
           `${`${sector.mainNetRatio.toFixed(2)}%`.padStart(8)} ` +
-          `${formatYi(sector.superNet).padStart(12)} ${formatYi(sector.bigNet).padStart(12)}`,
+          `${formatAmount(sector.superNet).padStart(12)} ${formatAmount(sector.bigNet).padStart(12)}`,
       );
     }
 
@@ -182,8 +144,8 @@ async function runFundFlow(args: string[]): Promise<void> {
       const last = detail.points.at(-1);
       console.log(`\n明细接口：${detail.code} ${detail.name} 分钟级点位 ${detail.points.length} 个`);
       console.log(
-        `  最新点位 ${last?.time ?? '-'}：主力 ${formatYi(last?.mainNet ?? 0)}` +
-          ` / 超大单 ${formatYi(last?.superNet ?? 0)} / 大单 ${formatYi(last?.bigNet ?? 0)}`,
+        `  最新点位 ${last?.time ?? '-'}：主力 ${formatAmount(last?.mainNet ?? 0)}` +
+          ` / 超大单 ${formatAmount(last?.superNet ?? 0)} / 大单 ${formatAmount(last?.bigNet ?? 0)}`,
       );
       const detailOk =
         detail.points.length > 0 &&
@@ -201,37 +163,51 @@ async function runFundFlow(args: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// render：本地渲染 PNG
+// render：本地渲染两张 PNG（行业 + 概念）
 // ---------------------------------------------------------------------------
 async function runRender(): Promise<void> {
   const config = loadAppConfig({ requireCredentials: false });
   setLogLevel(config.logLevel === 'debug' ? 'debug' : 'info');
   const logger = createLogger('verify:render');
 
-  const provider = createProvider(logger);
-  const snapshot = await provider.getIndustrySnapshot();
-  const top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
-
-  const image = renderPng({
-    blocks: top,
-    source: snapshot.source,
-    quoteTime: snapshot.quoteTime,
-    fetchedAt: snapshot.fetchedAt,
-    fontFiles: config.fontFiles,
-  });
-
+  const provider = new EastmoneyFundFlowProvider({ logger, cacheTtlMs: 0 });
   const dir = join(process.cwd(), '.tmp-probe', 'preview');
   await mkdir(dir, { recursive: true });
-  const pngPath = join(dir, 'market-sample.png');
-  const svgPath = join(dir, 'market-sample.svg');
-  await writeFile(pngPath, image.png);
-  await writeFile(svgPath, image.svg, 'utf8');
 
-  const stats = summarizeBlocks(top);
-  logger.info(`PNG：${pngPath}（${image.width}x${image.height}，${(image.png.length / 1024).toFixed(0)}KB）`);
-  logger.info(`SVG：${svgPath}`);
-  logger.info(`行情时间：${formatQuoteTime(snapshot.quoteTime)}，来源：${snapshot.source}`);
-  logger.info(`涨跌统计：上涨 ${stats.up} / 下跌 ${stats.down} / 平盘 ${stats.flat}`);
+  for (const kind of ['industry', 'concept'] as SectorKind[]) {
+    const snapshot = await provider.getSectorFundFlow(kind, 'today');
+    const blocks = takeTopBlocks(snapshot, MAX_TOP_SECTORS);
+    const kindLabel = SECTOR_KIND_LABEL[kind];
+
+    const image = renderPng({
+      blocks,
+      source: snapshot.source,
+      quoteTime: snapshot.quoteTime,
+      fetchedAt: snapshot.fetchedAt,
+      title: formatImageTitle({
+        kindLabel,
+        metricLabel: METRIC_LABEL,
+        blockCount: blocks.length,
+      }),
+      metricLabel: METRIC_LABEL,
+      fontFiles: config.fontFiles,
+    });
+
+    const pngPath = join(dir, `fundflow-${kind}.png`);
+    const svgPath = join(dir, `fundflow-${kind}.svg`);
+    await writeFile(pngPath, image.png);
+    await writeFile(svgPath, image.svg, 'utf8');
+
+    const stats = summarizeBlocks(blocks);
+    logger.info(
+      `${kindLabel} PNG：${pngPath}（${image.width}x${image.height}，${(image.png.length / 1024).toFixed(0)}KB）`,
+    );
+    logger.info(
+      `  板块=${blocks.length} 行情时间=${formatQuoteTime(snapshot.quoteTime)} ` +
+        `涨跌：上涨 ${stats.up} / 下跌 ${stats.down} / 平盘 ${stats.flat}`,
+    );
+    logger.info(`  主力净流入第一：${blocks[0]?.name ?? '-'} ${formatAmount(blocks[0]?.turnover ?? 0)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,13 +452,9 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'all':
-      await runMarket();
       await runFundFlow([]);
       await runRender();
       await runQq();
-      return;
-    case 'market':
-      await runMarket();
       return;
     case 'fundflow':
       await runFundFlow(args);

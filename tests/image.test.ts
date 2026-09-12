@@ -4,11 +4,11 @@ import { colorForChange, estimateTextWidth, readableTextColor, truncateToWidth }
 import type { MarketBlock } from '../src/market/types.js';
 
 const blocks: MarketBlock[] = [
-  { code: 'BK1', name: '半导体', changePercent: 3.2, turnover: 9e10, quoteTimestamp: 1_752_000_000 },
-  { code: 'BK2', name: '证券', changePercent: -2.1, turnover: 6e10, quoteTimestamp: 1_752_000_000 },
-  { code: 'BK3', name: '银行', changePercent: 0.3, turnover: 4e10, quoteTimestamp: 1_752_000_000 },
-  { code: 'BK4', name: '酿酒行业', changePercent: 0, turnover: 2e10, quoteTimestamp: 1_752_000_000 },
-  { code: 'BK5', name: '汽车整车', changePercent: -0.8, turnover: 1e10, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK1', name: '半导体', changePercent: 3.2, turnover: 4.74e9, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK2', name: '证券', changePercent: -2.1, turnover: 3.7e9, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK3', name: '银行', changePercent: 0.3, turnover: 2.9e9, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK4', name: '酿酒行业', changePercent: 0, turnover: 1.8e9, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK5', name: '汽车整车', changePercent: -0.8, turnover: 1.2e9, quoteTimestamp: 1_752_000_000 },
 ];
 
 const baseOptions = {
@@ -16,18 +16,29 @@ const baseOptions = {
   source: '东方财富',
   quoteTime: new Date(1_752_000_000 * 1000),
   fetchedAt: new Date(),
+  title: '行业板块主力流入Top5',
+  metricLabel: '主力流入',
 };
 
 describe('renderSvg', () => {
-  it('生成包含数据源与行情时间的 SVG（不含大标题）', () => {
+  it('★ 主标题为「板块类型+指标+Top数量」，副标题为数据源+时间', () => {
     const { svg, width, height } = renderSvg(baseOptions);
     expect(svg.startsWith('<?xml')).toBe(true);
-    expect(svg).toContain('东方财富');
-    expect(svg).toContain('行情时间');
-    // 大标题已移除
-    expect(svg).not.toContain('A 股行业板块热力图');
+    expect(svg).toContain('行业板块主力流入Top5');
+    expect(svg).toContain('东方财富 · 行情时间');
     expect(width).toBe(1200);
     expect(height).toBe(900);
+  });
+
+  it('页脚说明随指标名变化', () => {
+    const { svg } = renderSvg(baseOptions);
+    expect(svg).toContain('矩形面积＝主力流入，颜色＝涨跌幅');
+  });
+
+  it('概念板块图的主标题与行业板块不同', () => {
+    const { svg } = renderSvg({ ...baseOptions, title: '概念板块主力流入Top25' });
+    expect(svg).toContain('概念板块主力流入Top25');
+    expect(svg).not.toContain('行业板块主力流入');
   });
 
   it('非今日行情只带完整日期，不含「上一交易日数据」后缀', () => {

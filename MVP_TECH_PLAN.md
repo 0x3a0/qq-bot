@@ -189,31 +189,34 @@ GET https://push2delay.eastmoney.com/api/qt/stock/fflow/kline/get
 ### 图片
 
 - 使用 Treemap 展示板块。
-- 每张图展示成交额排名前 25 的行业板块。
-- 矩形面积使用成交额 `f6`。
+- 每张图展示主力净流入额排名前 25 的板块。
+- 矩形面积使用主力净流入额 `f62`（今日口径）。
 - 矩形颜色使用涨跌幅 `f3`。
-- 输出固定尺寸 PNG，目标小于 5 MB。
-- 图片中显示市场、数据源和行情时间。
+- 输出固定尺寸 PNG（1200x900），目标小于 5 MB。
+- 头部显示板块类型、周期、数据源与 `f124` 对应的行情时间，例如：
+  `东方财富 · 行业板块今日主力净流入 TOP25 · 行情时间 09-11 15:39`。
 
 ## 5. 处理流程
 
 ```text
 WebSocket 事件
   -> 解析 @机器人 指令
-  -> 查询缓存或行情数据
-  -> 按成交额降序取前 25 个行业
-  -> 取数排序完成即发 TOP25 文字榜单（msg_type=0，msg_seq=1），不等图片
-  -> 生成 A 股 Treemap 图片
-  -> 群聊富媒体上传
-  -> 再发图片（msg_type=7，msg_seq=2）
+  -> 并发查询缓存或资金流数据（行业 / 概念）
+  -> 各自按主力净流入额降序取前 25 个板块
+  -> 各自生成 A 股 Treemap 图片
+  -> 各自由群聊富媒体上传
+  -> 渲染完成即发送（msg_type=7），不等另一张
 ```
+
+两张图**并发且互不阻塞**：先渲染完的先发，`msg_seq` 按实际发送顺序分配。
+`大盘` 不发送文字数据，仅在两张图都失败时回一条错误说明。
 
 需要具备：
 
 - Access Token 自动刷新
 - WebSocket 心跳、断线重连和 Resume
 - `msg_id + msg_seq` 去重
-- 行情短时缓存和失败兜底
+- 资金流短时缓存和失败兜底
 
 ## 6. 部署方案：Railway + WebSocket
 
@@ -240,8 +243,8 @@ Railway 配置要点：
 
 1. 测试群中完成机器人注册和 `@` 事件接收。
 2. 完成 Token、WebSocket 和文本回复。
-3. 完成东方财富全量行业取数、成交额排序和前 25 筛选。
-4. 完成富媒体上传并发送 A 股图片。
+3. 完成东方财富全量行业 / 概念板块资金流取数、主力净额排序和前 25 筛选。
+4. 完成富媒体上传并发送两张 A 股图片（行业 + 概念）。
 5. 补齐缓存、重连、错误处理和单元测试。
 
 ## 8. 本地运行与验证
@@ -251,8 +254,8 @@ Railway 配置要点：
 ```bash
 npm install
 copy .env.example .env       # 填入 APP_ID / CLIENT_SECRET
-npm run verify -- market     # 行情取数（无需凭据）
-npm run verify -- render     # 本地出图（无需凭据）
+npm run verify -- fundflow   # 资金流取数与自校验（无需凭据）
+npm run verify -- render     # 本地出两张图（无需凭据）
 npm run verify -- qq         # Token + Gateway 接入点自检
 npm run verify -- inbound    # ★ 监听并打印 GROUP_AT_MESSAGE_CREATE 事件
 npm start                    # 启动机器人，群内 @机器人 大盘 出图
@@ -264,10 +267,10 @@ npm start                    # 启动机器人，群内 @机器人 大盘 出图
 |---|---|
 | Access Token 自动刷新 | `src/qq/token.ts`（提前 5 分钟刷新，合并并发请求） |
 | WebSocket 心跳、断线重连与 Resume | `src/qq/gateway.ts`（按官方错误码决定 resume 或 identify，含 Resume 看门狗） |
-| `msg_id + msg_seq` 去重 | `src/qq/dedupe.ts` |
+| `msg_id + msg_seq` 去重 | `src/qq/dedupe.ts`、`src/commands/bot.ts`（并发链路下按发送顺序分配 seq） |
 | 会话持久化（可选 Resume） | `src/qq/session-store.ts`（缓存绑定 AppID 与接入点，换账号自动失效；默认不 Resume） |
-| 行情短时缓存和失败兜底 | `src/market/eastmoney.ts`、`src/market/cache.ts`、`src/commands/bot.ts` |
-| 全量行业取数、成交额排序与前 25 筛选 | `src/market/eastmoney.ts` |
+| 资金流短时缓存和失败兜底 | `src/market/fundflow.ts`、`src/market/cache.ts`、`src/commands/bot.ts` |
+| 全量行业/概念取数、主力净额排序与前 25 筛选 | `src/market/fundflow.ts`、`src/market/sectors.ts` |
 | 富媒体分片上传（本地开发无需公网 URL） | `src/qq/api-client.ts` |
 | Treemap 布局与 PNG 渲染 | `src/render/treemap.ts`、`src/render/image.ts` |
 
@@ -281,4 +284,7 @@ npm start                    # 启动机器人，群内 @机器人 大盘 出图
 
 ## 9. MVP 验收标准
 
-在测试群中发送 `@机器人 大盘`，能够在 5 分钟内收到**两条消息**：先是一条成交额 TOP25 文字榜单，再是一张 A 股行业板块图片；图片包含按成交额降序筛选的前 25 个行业，并标注东方财富数据源和行情时间；重复事件不会重复回复；数据源或图片生成失败时能够返回文字错误提示。
+在测试群中发送 `@机器人 大盘`，能够在 5 分钟内收到**两张图片**：
+行业板块与概念板块各一张主力净流入 TOP25 热力图。两张图先渲染完的先送达；
+图片标注数据源、板块类型、周期与行情时间；重复事件不会重复回复；
+数据源或图片生成失败时能够返回文字错误提示。

@@ -3,8 +3,8 @@ import { clearRenderCache, renderCacheSize, renderPng } from '../src/render/imag
 import type { MarketBlock } from '../src/market/types.js';
 
 const blocks: MarketBlock[] = [
-  { code: 'BK1', name: '半导体', changePercent: 3.2, turnover: 9e10, quoteTimestamp: 1_752_000_000 },
-  { code: 'BK2', name: '证券', changePercent: -2.1, turnover: 6e10, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK1', name: '半导体', changePercent: 3.2, turnover: 4.74e9, quoteTimestamp: 1_752_000_000 },
+  { code: 'BK2', name: '证券', changePercent: -2.1, turnover: 3.7e9, quoteTimestamp: 1_752_000_000 },
 ];
 
 const base = {
@@ -12,6 +12,8 @@ const base = {
   source: '东方财富',
   quoteTime: new Date(1_752_000_000 * 1000),
   fetchedAt: new Date(),
+  title: '行业板块主力流入Top2',
+  metricLabel: '主力流入',
 };
 
 describe('PNG 内容缓存', () => {

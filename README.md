@@ -1,13 +1,14 @@
-# QQ 群机器人 · A 股行业板块热力图（MVP）
+# QQ 群机器人 · A 股板块资金流热力图（MVP）
 
-群成员在 QQ 群里 `@机器人 大盘`，机器人被动回复一张 A 股行业板块 Treemap 热力图。
+群成员在 QQ 群里 `@机器人 大盘`，机器人被动回复**两张** Treemap 热力图：
+行业板块 TOP25 与概念板块 TOP25（按主力净流入额排序）。
 
 技术方案见 [MVP_TECH_PLAN.md](./MVP_TECH_PLAN.md)。
 
 - 事件接入：QQ 机器人 API v2 · Gateway WebSocket · `GROUP_AT_MESSAGE_CREATE`
-- 行情数据：东方财富行业板块接口 `fs=m:90+t:2`
+- 数据源：东方财富板块资金流接口（行业 `fs=m:90 t:2` / 概念 `fs=m:90 t:3`，按 `f62` 主力净流入排序）
 - 出图：d3-hierarchy squarified Treemap → SVG → PNG（`@resvg/resvg-js`）
-- 回复：群聊富媒体上传拿 `file_info` → `msg_type=7` 被动回复
+- 回复：群聊富媒体上传拿 `file_info` → `msg_type=7` 被动回复，两张图各自渲染完即发
 
 ## 快速开始（本地运行）
 
@@ -38,16 +39,13 @@ LOG_EVENTS=true            # 排查问题时打开，会打印收到的全部事
 所有自检统一走 `npm run verify -- <子命令>`：
 
 ```bash
-# 行情取数与排序（不需要 QQ 凭据）
-npm run verify -- market
-
 # 行业 / 概念板块资金流取数与自校验（不需要 QQ 凭据）
 npm run verify -- fundflow           # 今日，fid=f62
 npm run verify -- fundflow 5d        # 5 日，fid=f164
 npm run verify -- fundflow 10d       # 10 日，fid=f174
 
-# 本地渲染一张真实数据的 PNG（不需要 QQ 凭据）
-npm run verify -- render        # 输出 .tmp-probe/preview/market-sample.png
+# 本地渲染两张真实数据的 PNG（不需要 QQ 凭据）
+npm run verify -- render        # 输出 .tmp-probe/preview/fundflow-{industry,concept}.png
 
 # 校验 APP_ID / CLIENT_SECRET 与 Gateway 接入点（不发送消息）
 npm run verify -- qq
@@ -60,7 +58,7 @@ npm run verify -- inbound 60 --reset     # 更换过机器人账号时，先清�
 # 富媒体分片上传诊断（打印 prepare/PUT/part_finish/merge 各步骤原始结果）
 npm run verify -- upload <group_openid> [图片路径]
 
-# 一次跑完 market + fundflow + render + qq
+# 一次跑完 fundflow + render + qq
 npm run verify
 ```
 
@@ -83,9 +81,12 @@ npm start        # 或 npm run dev（文件变更自动重启）
 | 群消息 | 机器人的回复 |
 |---|---|
 | `@机器人 ping` | `pong · 机器人在线 · 时间` 文本 |
-| `@机器人 大盘` | **① 成交额 TOP25 文字榜单 → ② A 股行业板块热力图** |
+| `@机器人 大盘` | **两张图片**：行业板块 TOP25 + 概念板块 TOP25 主力净流入热力图（先渲染完的先发） |
 | `@机器人 帮助` | 指令说明 |
 | 其它内容 | 忽略（不回复） |
+
+> `大盘` **不再发送文字榜单**，数据全部通过图片呈现；
+> 只有在两张图都失败时，才发一条错误说明文字。
 
 ## 处理流程
 
@@ -94,32 +95,20 @@ Gateway WebSocket
   → GROUP_AT_MESSAGE_CREATE（@机器人）
   → 指令解析（大盘 / ping / 帮助）
   → 事件去重（msg_id）
-  → 行情取数（东方财富全量行业板块，短时缓存）
-  → 按成交额 f6 降序取 TOP25
-  → ① 立刻发 TOP25 文字榜单（msg_type=0，msg_seq=1）
-  → ② Treemap 渲染 PNG → 群聊分片上传拿 file_info
-       → 发送图片（msg_type=7，msg_seq=2）
+  → 并发两条链路（互不等待）：
+       行业板块：取数(496) → 按 f62 降序取 TOP25 → 渲染 PNG → 分片上传 → msg_type=7 发送
+       概念板块：取数(504) → 按 f62 降序取 TOP25 → 渲染 PNG → 分片上传 → msg_type=7 发送
+  → 每条链路渲染完成即发送，msg_seq 按实际发送顺序分配（1、2）
 ```
 
-文字榜单只依赖取数结果，因此**不等图片**：取数排序完成即发出（约 2 秒内可见），
-图片链路（渲染约 1.5~2.4s + 上传约 1.6s）在后面继续跑。
-
-文字榜单示例（先发这条，再发图）：
-
-```text
-行业板块成交额 TOP25
- 1. 电子 -1.10% 4886亿
- 2. 半导体 -1.98% 2109亿
-...
-30. 汽车零部件 -1.94% 398.3亿
-东方财富 · 行情时间 2026-09-11 15:39
-```
+两条链路**并发且互不阻塞**：先渲染完的那张先发出去，用户不必等两张都好。
 
 兜底策略：
 
-- 文字榜单与图片使用**递增的 `msg_seq`**（平台要求相同 `msg_id` 的不同回复必须换序号）
-- 行情取数失败 → 没有任何数据可发，只发一条错误说明（不会先发榜单）
-- 图片渲染/上传/发送失败 → 榜单已送达，只补一条简短失败说明（不重发长榜单）
+- 两张图使用**递增的 `msg_seq`**（平台要求相同 `msg_id` 的不同回复必须换序号）
+- 单张失败 → 另一张照常发送，日志记录失败原因（结果记为 `partial`）
+- 两张都失败 → 发一条错误说明文字
+- 数据失败的具体原因会带上板块类型（行业 / 概念）便于定位
 - `msg_seq` 用尽（平台上限 5 次）→ 停止回复并记录日志
 
 ## 东方财富资金流接口（行业 / 概念）
@@ -266,21 +255,21 @@ src/
     session-store.ts   会话持久化（绑定 AppID，重启后可选 Resume）
     types.ts           事件与 opcode 类型
   market/
-    eastmoney.ts       东方财富行业板块取数、过滤、排序
     fundflow.ts        东方财富行业/概念板块资金流取数（分页+重试+缓存）
     fundflow-types.ts  资金流领域模型（周期、板块类型、快照）
+    sectors.ts         资金流 → Treemap 渲染块（取主力净流入前 25）
     cache.ts           短时缓存（含请求合并）
-    format.ts          成交额/涨跌幅/行情时间格式化
-    types.ts           行情领域模型
+    format.ts          金额/涨跌幅/行情时间格式化、图片头部文案
+    types.ts           渲染块领域模型（MarketBlock）
   render/
     treemap.ts         squarified Treemap 布局
     color.ts           涨跌幅 → 颜色映射
     image.ts           SVG/PNG 渲染
   commands/
     parser.ts          @ 消息内容 → 指令
-    bot.ts             指令路由、上传、被动回复、兜底
+    bot.ts             指令路由、两图并发发送、被动回复、兜底
 scripts/
-  verify.ts            统一自检入口（market / fundflow / render / qq / inbound / upload）
+  verify.ts            统一自检入口（fundflow / render / qq / inbound / upload）
 tests/                 vitest 单元测试
 ```
 
@@ -289,7 +278,7 @@ tests/                 vitest 单元测试
 ```bash
 npm start           # 启动机器人
 npm run dev         # 启动并监听文件变更
-npm run verify      # 自检（market + fundflow + render + qq）
+npm run verify      # 自检（fundflow + render + qq）
 npm run typecheck   # tsc --noEmit
 npm test            # vitest run
 npm run check       # 类型检查 + 测试
@@ -312,9 +301,10 @@ npm run check       # 类型检查 + 测试
 
 ## 说明
 
-- 图片按成交额降序展示 TOP25 行业板块，矩形面积＝成交额，颜色＝涨跌幅（红涨绿跌）。
-- 图片不放标题，头部只保留一行数据说明：`数据源 · 行业板块成交额 TOP25 · 行情时间` 与涨跌家数。
-- 行情结果默认缓存 60 秒（`MARKET_CACHE_TTL_MS`）。
+- 图片按**主力净流入额**降序展示 TOP25 板块，矩形面积＝主力流入，颜色＝涨跌幅（红涨绿跌）。
+- 头部两行：**主标题**「板块类型 + 指标 + Top数量」（如 `行业板块主力流入Top25`），
+  **副标题**「数据源 · 行情时间」；右上角显示涨跌家数。
+- 资金流结果默认缓存 60 秒（`MARKET_CACHE_TTL_MS`），按「板块类型 + 周期」分键。
 - 东方财富接口是公开网页行情接口，无稳定性保证，MVP 未接入备用数据源。
 - **行情时间说明**：图片标注的是数据源返回的 `f124`（行情时间）。
   - 交易日盘中：随行情刷新；
@@ -333,11 +323,14 @@ npm run check       # 类型检查 + 测试
 
 | 阶段 | 耗时 | 说明 |
 |---|---|---|
-| 行情取数（东方财富全量 496 条） | 1.5 ~ 2.7s | 5 页串行请求，**单页延迟波动很大**（实测 110ms ~ 1.8s，取决于服务端） |
+| 资金流取数（行业 496 条 / 概念 504 条） | 1.8s / 5.7s | 各自 5~6 页串行请求，**单页延迟波动很大**（实测 110ms ~ 1.8s，取决于服务端） |
 | treemap 布局 + 拼接 SVG | ~0ms | 纯计算，可忽略 |
-| PNG 渲染 | 1.5 ~ 2.4s | 几乎全部是**中文字形处理**，见下 |
-| 分片上传（115KB） | ~1.6s | 4 次 HTTPS 往返：prepare → PUT → part_finish → merge |
+| PNG 渲染（每张） | 1.5 ~ 2.4s | 几乎全部是**中文字形处理**，见下 |
+| 分片上传（约 105KB） | ~1.6s | 4 次 HTTPS 往返：prepare → PUT → part_finish → merge |
 | 发送富媒体消息 | ~1.2s | 平台侧转存图片 |
+
+两条链路**并发**，所以总耗时接近「较慢的那条」，而不是两者相加。
+第一张图在自身链路完成后立即发出，不必等第二张。
 
 ### 渲染为什么慢
 
@@ -362,6 +355,7 @@ vs 约 7ms/英文节点），且字体库无法跨 `Resvg` 实例复用。相关
 | 分片上传的 `index` 是 1-based | 官方文档示例写 0-based，实测服务端下发首个分片为 `index: 1`。偏移必须按 `(index - 1) * blockSize` 计算，否则会从文件末尾开始上传 **0 字节**（COS 仍返回 200），合并时报 `850019 富媒体文件格式不支持` |
 | 本地开发必须用分片上传 | URL 上传要求平台能访问到图片地址，`localhost` 不可用 |
 | 被动回复的 `msg_seq` 必须动态分配 | 平台对相同 `msg_id + msg_seq` 直接判重（`40054005`）。硬编码固定序号、或失败后沿用原序号重试，都会踩坑；本项目每次发送前认领未被占用的序号，命中判重则换号重试 |
+| 认领过的 `msg_seq` 不能归还 | 两条图片链路并发发送，归还序号会让两个发送撞到同一个 seq（实测出现 `[1,1,2]`）；且平台已把该 seq 记为用过，复用必被判重 |
 | 被动回复时效 | `msg_id` 5 分钟内有效，同一 `msg_id` 最多回复 5 次（`msg_seq` 1..5），用尽后平台报 `40034128` |
 | 平台可能对同一事件重复投递 | 需按 `msg_id` 去重；注意重投时 `msg_id` 通常不变，但内容相同的两条真实消息 `msg_id` 是不同的 |
 

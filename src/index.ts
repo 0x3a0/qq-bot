@@ -11,7 +11,7 @@ import { loadConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { createLogger, describeError, setLogLevel } from './logger.js';
 import { GroupMessageHandler } from './commands/bot.js';
-import { EastmoneyIndustryProvider } from './market/eastmoney.js';
+import { EastmoneyFundFlowProvider } from './market/fundflow.js';
 import { QqApiClient } from './qq/api-client.js';
 import { MessageDeduplicator } from './qq/dedupe.js';
 import { GatewayClient, type GatewayEvent } from './qq/gateway.js';
@@ -39,11 +39,11 @@ async function main(): Promise<void> {
   });
 
   const api = new QqApiClient({ apiBase: config.apiBase, tokens, logger });
-  const market = new EastmoneyIndustryProvider({ logger, cacheTtlMs: config.marketCacheTtlMs });
+  const fundflow = new EastmoneyFundFlowProvider({ logger, cacheTtlMs: config.marketCacheTtlMs });
 
   const handler = new GroupMessageHandler({
     api,
-    market,
+    fundflow,
     logger,
     dedupe: new MessageDeduplicator(),
     imageOutputDir: config.imageOutputDir,

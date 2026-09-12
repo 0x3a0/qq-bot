@@ -1,5 +1,8 @@
 /**
- * 群消息处理：指令路由、行情取数、图片渲染、富媒体上传与被动回复。
+ * 群消息处理：指令路由、板块资金流取数、图片渲染、富媒体上传与被动回复。
+ *
+ * 大盘指令的回复形态：两张图片（行业板块 + 概念板块），
+ * 各自「渲染完成即发送」，不等待另一张，最大化感知速度。
  *
  * 关键约束（官方文档）：
  * - 被动回复需携带 msg_id，5 分钟内有效，同一 msg_id 最多回复 5 次；
@@ -11,14 +14,16 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describeError, type Logger } from '../logger.js';
+import { formatImageTitle, formatQuoteTime } from '../market/format.js';
+import { MAX_TOP_SECTORS, takeTopBlocks } from '../market/sectors.js';
 import {
-  formatBlockRanking,
-  formatQuoteTime,
-  formatRankingFooter,
-  formatRankingTitle,
-} from '../market/format.js';
-import type { MarketProvider } from '../market/types.js';
-import { MAX_TOP_BLOCKS, takeTopBlocks } from '../market/eastmoney.js';
+  FUND_FLOW_PERIOD_LABEL,
+  SECTOR_KIND_LABEL,
+  type FundFlowPeriod,
+  type FundFlowProvider,
+  type FundFlowSnapshot,
+  type SectorKind,
+} from '../market/fundflow-types.js';
 import { renderPng } from '../render/image.js';
 import { QqApiError, type QqApiClient } from '../qq/api-client.js';
 import type { MessageDeduplicator } from '../qq/dedupe.js';
@@ -33,6 +38,9 @@ export const MAX_DEDUPE_RETRIES = 3;
 export const ERR_MESSAGE_DEDUPED = 40054005;
 export const ERR_PASSIVE_REPLY_LIMIT = 40034128;
 
+/** 出图指标名（用于图片主标题与页脚说明）。 */
+export const METRIC_LABEL = '主力流入';
+
 export interface GroupMessage {
   /** 事件体 d.id，用于被动回复 */
   messageId: string;
@@ -44,9 +52,12 @@ export interface GroupMessage {
 
 export interface MessageHandlingDeps {
   api: Pick<QqApiClient, 'sendGroupText' | 'sendGroupImage' | 'uploadGroupFileFromPath'>;
-  market: MarketProvider;
+  /** 板块资金流数据源（行业 / 概念） */
+  fundflow: Pick<FundFlowProvider, 'getSectorFundFlow'>;
   logger: Logger;
   dedupe: MessageDeduplicator;
+  /** 出图的统计周期，默认 today */
+  period?: FundFlowPeriod;
   /** 允许回复的群 openid 白名单；为空表示不限制（本地测试用） */
   allowedGroups?: Set<string>;
   /** 图片输出目录；设置后会把 PNG 落盘便于排查 */
@@ -58,8 +69,13 @@ export interface MessageHandlingDeps {
 }
 
 export type MessageHandlingOutcome =
-  | 'image-sent'
+  /** 大盘：两张图都发出去了 */
+  | 'images-sent'
+  /** 大盘：只发出去一张（另一张失败） */
+  | 'partial'
+  /** ping / 帮助 的文字回复 */
   | 'text-sent'
+  /** 数据或图片失败，改用文字说明 */
   | 'fallback-sent'
   | 'duplicate'
   | 'ignored'
@@ -108,7 +124,7 @@ export class GroupMessageHandler {
       case 'ping':
         return this.replyPing(message);
       case 'help':
-        return this.replyHelp(message);
+        return this.replyText(message, HELP_TEXT);
       case 'market':
         return this.replyMarket(message);
       default:
@@ -120,8 +136,190 @@ export class GroupMessageHandler {
     return `${message.groupOpenid}:${message.messageId}#event`;
   }
 
+  private async replyPing(message: GroupMessage): Promise<MessageHandlingOutcome> {
+    const now = this.deps.now?.() ?? new Date();
+    return this.replyText(message, `pong · 机器人在线 · ${formatQuoteTime(now)}`);
+  }
+
   /**
-   * 通用被动回复：每次尝试前认领一个未被占用的 msg_seq。
+   * 发送文字回复：自动认领未被占用的 msg_seq，命中平台判重时换序号重试。
+   */
+  private async replyText(message: GroupMessage, content: string): Promise<MessageHandlingOutcome> {
+    const result = await this.sendWithSeq(message, (seq) =>
+      this.deps.api.sendGroupText({
+        groupOpenid: message.groupOpenid,
+        content,
+        msgId: message.messageId,
+        msgSeq: seq,
+      }),
+    );
+
+    if (result.ok) {
+      this.logger.info(
+        `已发送文字回复：group=${message.groupOpenid} seq=${result.seq} 长度=${content.length}`,
+      );
+      return 'text-sent';
+    }
+    return result.seq === null ? 'reply-limit' : 'ignored';
+  }
+
+  /**
+   * 大盘：并发取「行业 + 概念」资金流，两张图各自渲染完成即发送。
+   *
+   * 并发而非串行：两个数据源彼此独立（各自 5~6 页请求），
+   * 串行会把耗时叠加；并发后总耗时接近较慢的那一个。
+   * 渲染同样是「谁先好谁先发」，用户先拿到第一张，不必等第二张。
+   */
+  private async replyMarket(message: GroupMessage): Promise<MessageHandlingOutcome> {
+    const kinds: SectorKind[] = ['industry', 'concept'];
+    // 两条链路并发启动（渲染完就各自发送），这里只是按固定顺序收集结果；
+    // 先完成的那张图片会在自己的链路里立刻发出，不必等另一张。
+    const pending = kinds.map((kind) =>
+      this.renderSectorImage(message, kind).then(
+        (value) => ({ status: 'fulfilled' as const, kind, value }),
+        (reason: unknown) => ({ status: 'rejected' as const, kind, reason }),
+      ),
+    );
+
+    let sent = 0;
+    let limitReached = false;
+    const failures: { kind: SectorKind; error: string }[] = [];
+
+    for (const settled of pending) {
+      const result = await settled;
+      if (result.status === 'fulfilled') {
+        if (result.value.sent) sent += 1;
+        else if (result.value.reason === 'reply-limit') limitReached = true;
+        else failures.push({ kind: result.kind, error: result.value.error ?? '未知错误' });
+      } else {
+        failures.push({ kind: result.kind, error: describeError(result.reason).split('\n')[0] ?? '未知错误' });
+      }
+    }
+
+    // 两张都没发出去：至少给用户一个文字说明（属于错误提示，不是数据回复）
+    if (sent === 0) {
+      if (limitReached) {
+        this.logger.error('被动回复次数已用尽，两张图片都未能发送');
+        return 'reply-limit';
+      }
+      const detail = failures.map((item) => `${SECTOR_KIND_LABEL[item.kind]}：${item.error}`).join('；');
+      const textOutcome = await this.replyText(
+        message,
+        `板块资金流数据获取失败，请稍后重试。\n原因：${detail || '未知错误'}`,
+      );
+      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
+    }
+
+    if (failures.length > 0) {
+      this.logger.warn(
+        `部分图片未发送：${failures.map((item) => `${SECTOR_KIND_LABEL[item.kind]}(${item.error})`).join('；')}`,
+      );
+    }
+    return sent === 2 ? 'images-sent' : 'partial';
+  }
+
+  /**
+   * 当前消息下一个可用的 msg_seq。
+   * 认领后不再归还：平台已把该 seq 记为「用过」，复用只会再次判重；
+   * 且两条图片链路并发发送，归还会让两个发送拿到同一个序号。
+   */
+  private readonly nextSeq = new Map<string, number>();
+
+  private claimReplySeq(msgId: string): number | null {
+    const seq = this.nextSeq.get(msgId) ?? 1;
+    if (seq > MAX_REPLY_SEQ) return null;
+    this.nextSeq.set(msgId, seq + 1);
+    return seq;
+  }
+
+  /**
+   * 取一类板块的资金流并出图发送。
+   * 返回是否发送成功；失败时把原因交给上层统一汇报。
+   */
+  private async renderSectorImage(
+    message: GroupMessage,
+    kind: SectorKind,
+  ): Promise<{ sent: boolean; reason?: 'send-failed' | 'reply-limit'; error?: string }> {
+    const { api, fundflow, logger } = this.deps;
+    const kindLabel = SECTOR_KIND_LABEL[kind];
+    const period = this.deps.period ?? 'today';
+    const periodLabel = FUND_FLOW_PERIOD_LABEL[period];
+
+    let snapshot: FundFlowSnapshot;
+    let blocks;
+    try {
+      const startedAt = Date.now();
+      snapshot = await fundflow.getSectorFundFlow(kind, period);
+      blocks = takeTopBlocks(snapshot, MAX_TOP_SECTORS);
+      logger.info(
+        `取到${kindLabel}${periodLabel}资金流 ${snapshot.sectors.length} 个，` +
+          `取前 ${blocks.length} 个出图（耗时 ${Date.now() - startedAt}ms）`,
+      );
+      if (blocks.length === 0) throw new Error('没有可用的板块数据');
+    } catch (error) {
+      logger.error(`${kindLabel}资金流获取失败：${describeError(error)}`);
+      return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
+    }
+
+    let filePath: string;
+    try {
+      const renderer = this.deps.renderer ?? renderPng;
+      const image = renderer({
+        blocks,
+        source: snapshot.source,
+        quoteTime: snapshot.quoteTime,
+        fetchedAt: snapshot.fetchedAt,
+        title: formatImageTitle({
+          kindLabel,
+          metricLabel: METRIC_LABEL,
+          blockCount: blocks.length,
+        }),
+        metricLabel: METRIC_LABEL,
+        fontFiles: this.deps.fontFiles,
+      });
+      filePath = await this.saveDebugImage(`${message.messageId}-${kind}`, image.png);
+    } catch (error) {
+      logger.error(`${kindLabel}图片渲染失败：${describeError(error)}`);
+      return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
+    }
+
+    try {
+      const uploaded = await api.uploadGroupFileFromPath({
+        groupOpenid: message.groupOpenid,
+        filePath,
+        fileName: `fundflow-${kind}-${Date.now()}.png`,
+        fileType: 1,
+      });
+      const sent = await this.sendWithSeq(message, (seq) =>
+        api.sendGroupImage({
+          groupOpenid: message.groupOpenid,
+          fileInfo: uploaded.fileInfo,
+          msgId: message.messageId,
+          msgSeq: seq,
+        }),
+      );
+
+      if (sent.ok) {
+        logger.info(
+          `已发送${kindLabel}图片：group=${message.groupOpenid} seq=${sent.seq} ` +
+            `板块=${blocks.length} 行情时间=${formatQuoteTime(snapshot.quoteTime)}`,
+        );
+        return { sent: true };
+      }
+      if (sent.seq === null) return { sent: false, reason: 'reply-limit' };
+      return {
+        sent: false,
+        reason: 'send-failed',
+        error: describeError(sent.error).split('\n')[0] ?? '未知错误',
+      };
+    } catch (error) {
+      logger.error(`${kindLabel}图片上传或发送失败：${describeError(error)}`);
+      return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
+    }
+  }
+
+  /**
+   * 通用被动回复：认领未被占用的 msg_seq，命中平台判重时换序号重试。
    * 平台对相同 msg_id + msg_seq 会直接判重（40054005），
    * 因此失败后必须换序号重试，不能沿用同一个 seq。
    */
@@ -129,15 +327,15 @@ export class GroupMessageHandler {
     message: GroupMessage,
     sender: (seq: number) => Promise<unknown>,
   ): Promise<{ ok: boolean; seq: number | null; error?: unknown }> {
-    const { dedupe, logger } = this.deps;
+    const { logger } = this.deps;
+    const msgId = message.messageId;
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= MAX_DEDUPE_RETRIES; attempt += 1) {
-      const seq = dedupe.claimSeq(message.messageId, MAX_REPLY_SEQ);
+      // 认领与发送在同一个同步步骤内完成，保证并发链路的 seq 顺序与发送顺序一致
+      const seq = this.claimReplySeq(msgId);
       if (seq === null) {
-        logger.error(
-          `msg_id=${message.messageId} 的被动回复次数已用尽（上限 ${MAX_REPLY_SEQ} 次），放弃回复`,
-        );
+        logger.error(`${msgId} 的被动回复次数已用尽（上限 ${MAX_REPLY_SEQ} 次），放弃回复`);
         return { ok: false, seq: null, ...(lastError === undefined ? {} : { error: lastError }) };
       }
 
@@ -164,156 +362,11 @@ export class GroupMessageHandler {
     return error instanceof QqApiError && error.code === ERR_MESSAGE_DEDUPED;
   }
 
-  private async replyPing(message: GroupMessage): Promise<MessageHandlingOutcome> {
-    const now = this.deps.now?.() ?? new Date();
-    return this.replyText(message, `pong · 机器人在线 · ${formatQuoteTime(now)}`);
-  }
-
-  private async replyHelp(message: GroupMessage): Promise<MessageHandlingOutcome> {
-    return this.replyText(message, HELP_TEXT);
-  }
-
-  /**
-   * 发送文字回复：自动认领未被占用的 msg_seq，命中平台判重时换序号重试。
-   */
-  private async replyText(message: GroupMessage, content: string): Promise<MessageHandlingOutcome> {
-    const result = await this.sendWithSeq(message, (seq) =>
-      this.deps.api.sendGroupText({
-        groupOpenid: message.groupOpenid,
-        content,
-        msgId: message.messageId,
-        msgSeq: seq,
-      }),
-    );
-
-    if (result.ok) {
-      this.logger.info(
-        `已发送文字回复：group=${message.groupOpenid} seq=${result.seq} 长度=${content.length}`,
-      );
-      return 'text-sent';
-    }
-    return result.seq === null ? 'reply-limit' : 'ignored';
-  }
-
-  /**
-   * 大盘：取数排序筛出 TOP N 后「立刻」发文字榜单，再渲染并发送图片。
-   *
-   * 顺序设计：文字只需取数结果，图片还要渲染（约 1.5~2.4s）+ 分片上传（约 1.6s）。
-   * 因此文字先发，用户不必等图片链路完成就能看到数据。
-   */
-  private async replyMarket(message: GroupMessage): Promise<MessageHandlingOutcome> {
-    const { api, market, logger } = this.deps;
-
-    let snapshot;
-    let top;
-    try {
-      snapshot = await market.getIndustrySnapshot();
-      top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
-      if (top.length === 0) throw new Error('没有可用的行业板块数据');
-    } catch (error) {
-      // 取数就失败：没有数据可发，直接给一条错误说明
-      logger.error(`行情数据获取失败：${describeError(error)}`);
-      const textOutcome = await this.replyText(message, this.buildFetchFailureText(error));
-      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
-    }
-
-    // ① 数据已就绪，立刻发文字榜单（占用 seq=1）
-    const rankingText = formatBlockRanking(top, {
-      title: formatRankingTitle(top.length),
-      footer: formatRankingFooter({
-        source: snapshot.source,
-        quoteTime: snapshot.quoteTime,
-        fetchedAt: snapshot.fetchedAt,
-        ...(this.deps.now ? { now: this.deps.now() } : {}),
-      }),
-    });
-
-    const ranking = await this.sendWithSeq(message, (seq) =>
-      api.sendGroupText({
-        groupOpenid: message.groupOpenid,
-        content: rankingText,
-        msgId: message.messageId,
-        msgSeq: seq,
-      }),
-    );
-
-    if (ranking.ok) {
-      logger.info(
-        `已发送文字榜单：group=${message.groupOpenid} seq=${ranking.seq} ` +
-          `板块=${top.length} 长度=${rankingText.length}`,
-      );
-    } else if (ranking.seq === null) {
-      logger.error('被动回复次数已用尽，文字榜单未发送，跳过图片发送');
-      return 'reply-limit';
-    } else {
-      logger.warn('文字榜单发送失败，继续尝试发送图片');
-    }
-
-    // ② 渲染 + 上传 + 发送图片（占用后续 msg_seq）
-    try {
-      const renderer = this.deps.renderer ?? renderPng;
-      const image = renderer({
-        blocks: top,
-        source: snapshot.source,
-        quoteTime: snapshot.quoteTime,
-        fetchedAt: snapshot.fetchedAt,
-        fontFiles: this.deps.fontFiles,
-      });
-
-      const filePath = await this.saveDebugImage(message.messageId, image.png);
-      const uploaded = await api.uploadGroupFileFromPath({
-        groupOpenid: message.groupOpenid,
-        filePath,
-        fileName: `market-${Date.now()}.png`,
-        fileType: 1,
-      });
-
-      const sent = await this.sendWithSeq(message, (seq) =>
-        api.sendGroupImage({
-          groupOpenid: message.groupOpenid,
-          fileInfo: uploaded.fileInfo,
-          msgId: message.messageId,
-          msgSeq: seq,
-        }),
-      );
-
-      if (sent.ok) {
-        logger.info(
-          `已发送行情图片：group=${message.groupOpenid} seq=${sent.seq} 板块=${top.length} ` +
-            `尺寸=${image.width}x${image.height} 大小=${(image.png.length / 1024).toFixed(0)}KB ` +
-            `行情时间=${formatQuoteTime(snapshot.quoteTime)}`,
-        );
-        return 'image-sent';
-      }
-
-      if (sent.seq === null) {
-        // 序号用尽：文字榜单已送达，用户至少能看到数据
-        logger.error('被动回复次数已用尽，图片未发送（文字榜单已送达）');
-        return 'reply-limit';
-      }
-
-      // 文字榜单已经在前面发过了，这里只补一句失败说明
-      await this.replyText(message, `图片发送失败：${describeError(sent.error).split('\n')[0] ?? '未知错误'}`);
-      return 'fallback-sent';
-    } catch (error) {
-      logger.error(`生成或发送行情图片失败：${describeError(error)}`);
-      // 榜单已送达，这里只补失败说明，不再重复长文本
-      await this.replyText(message, `图片生成失败：${describeError(error).split('\n')[0] ?? '未知错误'}`);
-      return 'fallback-sent';
-    }
-  }
-
-  /** 取数失败时的错误说明（此时没有任何数据可发）。 */
-  private buildFetchFailureText(error: unknown): string {
-    const reason = describeError(error).split('\n')[0] ?? '未知错误';
-    return `行业板块数据获取失败，请稍后重试。\n原因：${reason}`;
-  }
-
   /** 落盘调试图片，便于排查渲染问题；返回文件路径。 */
-  private async saveDebugImage(messageId: string, png: Buffer): Promise<string> {
+  private async saveDebugImage(tag: string, png: Buffer): Promise<string> {
     const dir = this.deps.imageOutputDir ?? join(process.cwd(), '.tmp-probe', 'images');
     await mkdir(dir, { recursive: true });
-    const filePath = join(dir, `market-${sanitize(messageId)}-${Date.now()}.png`);
+    const filePath = join(dir, `market-${sanitize(tag)}-${Date.now()}.png`);
     await writeFile(filePath, png);
     this.logger.debug(`调试图片已保存：${filePath}`);
     return filePath;
