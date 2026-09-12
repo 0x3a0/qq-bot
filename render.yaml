@@ -1,0 +1,41 @@
+# Render Blueprint：https://render.com/docs/blueprint-spec
+#
+# 用法：Render Dashboard → New → Blueprint → 选择本仓库，然后只需在控制台补
+# APP_ID / CLIENT_SECRET（标记 sync: false 的变量）。
+#
+# 为什么用 Web Service 而不是 Background Worker：
+#   Background Worker 更贴合本服务（不需要端口），但只提供付费实例；
+#   Web Service 有免费实例，代价是必须绑定 PORT、且会因无流量休眠。
+#   程序只在平台注入 PORT 时才监听（只暴露一个 /health），本地运行不受影响。
+#
+# ⚠️ 部署后必须在 Dashboard 里手动做两件事（Blueprint 无法配置）：
+#   1. 关闭 Zero-Downtime Deploy —— 否则新实例起来后旧实例还会存活 60 秒，
+#      两个实例同时连着 QQ Gateway，同一条群消息会被回复两次。
+#   2. 确认实例数为 1 —— 本项目用 WebSocket 长连接 + 进程内去重，不能水平扩容。
+services:
+  - type: web
+    name: qq-bot
+    runtime: node
+    plan: free
+    region: singapore
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # 必填：在 Render 控制台里填写，不要提交进仓库
+      - key: APP_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: QQ_ENV
+        value: production
+      # 容器文件系统是临时的，写调试图没有意义
+      - key: DEBUG_IMAGES
+        value: "false"
+      # 容器里没有中文字体时 resvg 会静默不画文字（图只剩色块），
+      # 启动日志的「字体检查」会明确告警；缺失时把字体文件路径填到这里
+      - key: FONT_FILES
+        value: ""

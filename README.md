@@ -297,6 +297,73 @@ npm test            # vitest run
 npm run check       # 类型检查 + 测试
 ```
 
+## 部署到 Render
+
+**可以运行，但 Render 的服务模型与 Railway 不同**，需要额外注意三件事。
+仓库里已提供 `render.yaml` 蓝图，Dashboard → New → Blueprint → 选本仓库即可。
+
+### 与 Railway 的关键差异
+
+| 项 | Railway | Render |
+|---|---|---|
+| 是否必须监听端口 | 否（不监听就不给域名） | **Web Service 必须绑定 `PORT`**，否则判定部署失败；Background Worker 不需要端口但仅付费 |
+| 免费实例 | 有额度限制 | 有免费实例，但**15 分钟无流量/无 WebSocket 消息会休眠** |
+| 部署切换 | 停旧起新 | 默认**零停机**：先起新实例，60 秒后才停旧实例 ⚠️ |
+
+程序已适配：**只有平台注入 `PORT` 时才监听**，且只暴露一个 `/health`
+（就绪状态跟着 Gateway 走，未连上返回 503）。本地运行不注入 `PORT`，因此不会开监听。
+
+### 部署步骤
+
+1. Render → New → **Blueprint** → 选择本仓库（会读取 `render.yaml`）
+2. 在控制台填 `APP_ID`、`CLIENT_SECRET`（蓝图里标了 `sync: false`，不会进仓库）
+3. ⚠️ **关闭 Zero-Downtime Deploy**（Settings → Deploy）
+   Render 默认先起新实例、60 秒后才停旧实例。这两个实例会**同时连着 QQ Gateway**，
+   于是同一条群消息被回复两次——就是我们之前踩过的那个坑换了个形式。
+   关掉它之后是「停旧起新」，中间有几十秒不可用，但不会重复回复。
+4. 确认 **实例数为 1**（`numInstances: 1`）。本项目用 WebSocket 长连接、
+   去重状态在进程内存里，不能水平扩容。
+5. 把 `healthCheckPath` 设为 `/health`（蓝图已配置）。若用付费的 Background Worker，
+   删掉 `healthCheckPath` 与 `PORT` 即可——程序检测不到 `PORT` 就不开监听。
+
+### 免费实例的休眠问题（重要）
+
+Render 免费 Web 实例在 **15 分钟**内既没有 HTTP 请求、也没有收到 WebSocket 消息时
+会休眠（[2026-02 更新](https://render.com/changelog/free-web-services-now-remain-active-while-receiving-websocket-messages)：
+现在收到 WebSocket 消息也会续命）。对本服务的实际影响：
+
+- QQ Gateway 由**我们主动连出**，其下行流量属于 WebSocket 消息，能续命；
+- 但群里如果**连续 15 分钟没人 @ 机器人**，就没有下行消息，实例会被休眠，
+  此时机器人**收不到任何消息**（直到下次唤醒，而唤醒通常需要外部 HTTP 请求）；
+- 因此免费实例**不适合真正当服务用**。要稳定运行请用付费实例，
+  或改用 Background Worker（无休眠，但需付费）。
+
+### 部署后验证
+
+日志应出现（与 Railway 相同）：
+
+```text
+[INFO] [app] 未找到 .env，使用进程内环境变量
+[INFO] [app] 字体检查通过（探针 …B），使用系统字体
+[INFO] [app] 已监听 PORT=10000，仅提供 /health 健康检查（平台就绪判据）
+[INFO] [app:gateway] Gateway 鉴权成功 READY，session_id=…，机器人=…
+```
+
+再访问 `https://<你的服务>.onrender.com/health`，应返回 `ok`（Gateway 未就绪时返回 503）。
+
+**中文字体**：Render 的原生 Node 运行时不保证带 CJK 字体。启动日志若出现
+「字体检查未通过」，就 SSH 进去找字体并填 `FONT_FILES`：
+
+```bash
+# Render Dashboard → Shell
+fc-list :lang=zh | head        # 有输出说明系统已有中文字体
+find / -name "*NotoSansCJK*" 2>/dev/null | head
+```
+
+> 若系统完全没有中文字体，最省事的办法是在仓库里放一个 CJK 字体文件
+> （如 `fonts/NotoSansSC-Regular.otf`）并设 `FONT_FILES=fonts/NotoSansSC-Regular.otf`，
+> 随代码一起部署。
+
 ## 部署到 Railway
 
 **不能只 add 仓库就跑起来**，还需要在 Railway 上补几项配置。仓库里已经准备好了
@@ -396,9 +463,11 @@ find /nix/store -name "*NotoSansCJK*" 2>/dev/null | head
 
 | 现象 | 排查方向 |
 |---|---|
-| **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个进程同时连着同一机器人（平台会把同一条消息投递给每个连接）。程序已有单实例保护会直接拒绝启动；若看到 `已有另一个机器人在运行（pid=…）`，先关掉旧进程（线上检查副本数是否为 1）。锁文件在 `.tmp-probe/bot.lock` |
-| **图片有色块但没有文字** | 容器缺中文字体（resvg 静默失败）。看启动日志的字体检查告警，按「部署到 Railway」第 4 步处理 |
+| **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个实例同时连着同一机器人（平台会把同一条消息投递给每个连接）。可能有三种原因：① 本地开了两个进程（程序有单实例保护会直接拒绝启动，锁文件在 `.tmp-probe/bot.lock`）；② 平台副本数 > 1；③ **Render 等平台的零停机部署**——新旧实例会并存约 60 秒，需在平台设置里关闭 |
+| **图片有色块但没有文字** | 容器缺中文字体（resvg 静默失败）。看启动日志的字体检查告警，按部署章节的字体部分处理 |
+| **部署一段时间后机器人不响应，日志也停了** | Render 免费实例 15 分钟无流量会休眠。改用付费实例或 Background Worker |
 | 部署后立刻退出 | 多半是没配 `APP_ID` / `CLIENT_SECRET`（`.env` 不在仓库里）。日志会打印「配置校验失败」 |
+| Render 部署失败并提示未绑定端口 | Web Service 必须监听 `PORT`。程序会在检测到 `PORT` 时自动开一个仅含 `/health` 的监听；若日志报了端口监听失败，检查 `PORT` 是否被其他进程占用 |
 | `verify -- inbound` 超时收不到事件 | 机器人是否已加入该群；群里 @ 的是否是这个机器人；沙箱群需 `QQ_ENV=sandbox` |
 | 换了 APP_ID 却仍连上上一个机器人 | 会话缓存绑定 AppID 会自动失效；必要时 `npm run verify -- inbound 60 --reset` 清理 `.tmp-probe/gateway-session.json` |
 | 错误码 `40034024` / `40034005` | `msg_id` 无效或已过期（被动回复必须在 5 分钟内） |

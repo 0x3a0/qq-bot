@@ -92,6 +92,20 @@ const rawSchema = z.object({
     }),
   FONT_FILES: z.string().trim().optional(),
   IMAGE_OUTPUT_DIR: z.string().trim().optional(),
+  /** 平台注入的监听端口（Render 等以「绑定端口」判定就绪）；未注入则不监听 */
+  PORT: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value, ctx) => {
+      if (!value) return null;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `PORT 必须是 1..65535 的整数，当前为 ${value}` });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
 });
 
 export interface AppConfig {
@@ -110,6 +124,8 @@ export interface AppConfig {
   marketCacheTtlMs: number;
   fontFiles: string[];
   imageOutputDir: string;
+  /** 监听端口；null 表示不监听（本地默认） */
+  port: number | null;
 }
 
 function splitList(value: string | undefined): string[] {
@@ -148,5 +164,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     marketCacheTtlMs: raw.MARKET_CACHE_TTL_MS,
     fontFiles: splitList(raw.FONT_FILES),
     imageOutputDir: raw.IMAGE_OUTPUT_DIR && raw.IMAGE_OUTPUT_DIR.length > 0 ? raw.IMAGE_OUTPUT_DIR : '.tmp-probe/images',
+    port: raw.PORT,
   };
 }

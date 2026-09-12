@@ -10,6 +10,7 @@
 import { loadConfig } from './config.js';
 import { loadDotEnv } from './env.js';
 import { acquireLock, releaseLock } from './instance-lock.js';
+import { startHealthServer } from './health-server.js';
 import { createLogger, describeError, setLogLevel } from './logger.js';
 import { GroupMessageHandler } from './commands/bot.js';
 import { EastmoneyFundFlowProvider } from './market/fundflow.js';
@@ -167,14 +168,30 @@ async function main(): Promise<void> {
     logger.error(`Gateway 致命错误 code=${info.code}（${CLOSE_CODE_MEANING[info.code] ?? info.reason}），请检查机器人状态`);
   });
 
+  // 平台注入 PORT 时才监听（如 Render 的 Web Service 以「绑定端口」判定就绪）。
+  // 业务本身不需要端口：只主动连出 QQ Gateway。
+  const health = await startHealthServer({
+    ...(config.port === null ? {} : { port: config.port }),
+    logger,
+    isReady: () => gateway.isReady,
+  }).catch((error: unknown) => {
+    logger.error(`健康检查服务启动失败：${describeError(error)}`);
+    return null;
+  });
+
+  let shuttingDown = false;
   const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info(`收到 ${signal}，正在退出...`);
     gateway.stop();
+    void health?.close();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   await gateway.run();
+  await health?.close();
   logger.info('程序退出');
 }
 
