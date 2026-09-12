@@ -231,11 +231,19 @@ Railway Node.js 服务
 Railway 配置要点：
 
 - 使用常驻 Service，不使用一次性任务。
-- 将 `APP_ID`、`CLIENT_SECRET` 等敏感配置放入 Railway Variables。
-- 程序必须持续运行，并处理平台重启和部署重启。
+- 将 `APP_ID`、`CLIENT_SECRET` 等敏感配置放入 Railway Variables（`.env` 不提交仓库）。
+- 构建：`nixpacks.toml` 指定 Node 22 + 中文字体，`npm run build` 产出 `dist/`，
+  启动命令 `node dist/index.js`（运行时不依赖 tsx）。
+- **副本数必须为 1**：WebSocket 长连接 + 进程内去重，多副本会让同一条群消息被回复多次。
+- **服务不监听端口**，只主动连出，因此不需要公网域名，也不要用 HTTP 健康检查。
+- **必须确保容器内有中文字体**：resvg 缺字体时静默不画文字（图只剩色块），
+  启动时的字体探针会明确告警。
+- 程序必须持续运行，并处理平台重启和部署重启（已处理 SIGTERM）。
 - 记录 Gateway 连接、心跳、重连和消息发送日志。
 - 不依赖本地磁盘保存重要数据；MVP 的短期缓存和去重状态可先放在进程内。
-- 关注 Railway 当前套餐的运行时长、休眠和费用规则。
+- 关注 Railway 当前套餐的运行时长、休眠和费用规则（常驻服务会持续计费）。
+
+完整步骤与排查见 [README](./README.md#部署到-railway)。
 
 本 MVP 暂不实现 Webhook，也不部署到 Vercel。后续如需要 Serverless 再单独设计 Webhook + 队列架构。
 

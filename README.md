@@ -297,11 +297,108 @@ npm test            # vitest run
 npm run check       # 类型检查 + 测试
 ```
 
+## 部署到 Railway
+
+**不能只 add 仓库就跑起来**，还需要在 Railway 上补几项配置。仓库里已经准备好了
+构建相关文件（`nixpacks.toml`、`.node-version`、`tsconfig.build.json`），你要做的是下面 4 步。
+
+### 1. 新建 Service 并关联 GitHub 仓库
+
+Railway → New Project → Deploy from GitHub repo → 选择本仓库。
+Nixpacks 会自动识别 Node 项目，按 `nixpacks.toml` 执行：
+
+```text
+setup    : nodejs_22 + noto-fonts-cjk-sans + fontconfig
+install  : npm ci
+build    : npm run build      # tsc -p tsconfig.build.json → dist/
+start    : node dist/index.js
+```
+
+### 2. 配置 Variables（必填，否则启动即失败）
+
+| 变量 | 值 | 说明 |
+|---|---|---|
+| `APP_ID` | 你的 AppID | **必填**。`.env` 不会被提交，容器里只能靠这个 |
+| `CLIENT_SECRET` | 你的 AppSecret | **必填** |
+| `QQ_ENV` | `production` | 沙箱机器人填 `sandbox` |
+| `DEBUG_IMAGES` | `false` | 不往容器磁盘写调试图（容器文件系统是临时的，写它没意义） |
+| `FONT_FILES` | 见第 4 步 | 留空则走系统字体 |
+
+`.env` 里其余变量都有默认值，按需覆盖即可（`LOG_LEVEL`、`MARKET_CACHE_TTL_MS` 等）。
+
+> 敏感信息只放 Variables，不要提交到仓库。`.gitignore` 已忽略 `.env`。
+
+### 3. 副本数必须是 1
+
+本项目用 **WebSocket 长连接**接收事件，且去重状态在进程内存里，
+**不能水平扩容**：两个副本会各自连一个 Gateway 连接，同一条群消息被回复两次。
+所以：
+
+- 保持默认的 **1 个 replica**，不要开多副本
+- 部署切换时 Railway 会先停旧容器再起新容器；程序已处理 `SIGTERM` 优雅退出
+- 若日志出现 `已有另一个机器人在运行（pid=…）`，说明确实起了两个进程，
+  先确认副本数。容器里 pid 会跨部署重复，锁已按「运行环境 + pid」双重判定，
+  不会把上一次部署的锁误判成活的
+
+### 4. 中文字体（最容易踩的坑）
+
+resvg 在找不到字体时**不会报错**，只是不画文字——图片会变成一张只有色块、
+一个字都没有的图（同一张图实测：有字体 105KB / 无字体 19KB）。
+`nixpacks.toml` 已安装 `noto-fonts-cjk-sans`，正常情况下无需额外配置。
+
+程序启动时会用「单个汉字」渲染一张探针图来判断字体是否真的可用，并明确告警：
+
+```text
+[INFO] 字体检查通过（探针 2865B），使用系统字体
+# 或者
+[ERROR] ⚠️ 字体检查未通过（探针仅 454B）：当前环境缺少中文字体……
+```
+
+如果告警说缺字体，直接在容器里找字体路径填进 `FONT_FILES`：
+
+```bash
+railway run bash          # 或 railway ssh
+find /nix/store -name "*NotoSansCJK*" 2>/dev/null | head
+# 把找到的 .ttc/.otf 路径填进 Variables：FONT_FILES=/nix/store/.../NotoSansCJK-Regular.ttc
+```
+
+> 注意：`FONT_FILES` 指向不存在的文件时 resvg 会**静默回退到系统字体**，
+> 本地（有系统字体）看不出问题；探针会额外校验这些文件是否存在。
+
+### 5. 关于端口与健康检查
+
+本服务只**主动连出** QQ Gateway，不监听任何端口，因此：
+
+- 不需要也不应该配 `PORT` / 公网域名（Networking 里保持无域名即可）
+- Railway 若对「无端口」服务判定为异常，把健康检查/重启策略设为
+  `Restart on Failure`，不要用 HTTP 健康检查
+
+### 6. 部署后验证
+
+看部署日志，正常应看到：
+
+```text
+[INFO] [app] QQ Bot MVP 启动中（env=production，apiBase=https://api.bot.qq.com）
+[INFO] [app] 未找到 .env，使用进程内环境变量      ← 容器里正常
+[INFO] [app] 字体检查通过（探针 …B），使用系统字体
+[INFO] [app:gateway] Gateway 鉴权成功 READY，session_id=…，机器人=…
+[INFO] [app] 现在可以在测试群里 @机器人 发送「大盘」或「ping」
+```
+
+然后在群里发一次 `@机器人 大盘`，应收到两张引用回复的图片。
+若收到空白图（有色块无文字），回到第 4 步。
+
+> 关于费用与休眠：该服务需要**常驻**运行（Gateway 长连接），
+> 请留意 Railway 当前套餐的运行时长/休眠规则，免费额度不足以长期常驻时会被停机，
+> 停机期间机器人收不到任何消息。
+
 ## 常见问题
 
 | 现象 | 排查方向 |
 |---|---|
-| **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个进程同时连着同一机器人（平台会把同一条消息投递给每个连接）。程序已有单实例保护会直接拒绝启动；若看到 `已有另一个机器人在运行（pid=…）`，先关掉旧进程。锁文件在 `.tmp-probe/bot.lock` |
+| **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个进程同时连着同一机器人（平台会把同一条消息投递给每个连接）。程序已有单实例保护会直接拒绝启动；若看到 `已有另一个机器人在运行（pid=…）`，先关掉旧进程（线上检查副本数是否为 1）。锁文件在 `.tmp-probe/bot.lock` |
+| **图片有色块但没有文字** | 容器缺中文字体（resvg 静默失败）。看启动日志的字体检查告警，按「部署到 Railway」第 4 步处理 |
+| 部署后立刻退出 | 多半是没配 `APP_ID` / `CLIENT_SECRET`（`.env` 不在仓库里）。日志会打印「配置校验失败」 |
 | `verify -- inbound` 超时收不到事件 | 机器人是否已加入该群；群里 @ 的是否是这个机器人；沙箱群需 `QQ_ENV=sandbox` |
 | 换了 APP_ID 却仍连上上一个机器人 | 会话缓存绑定 AppID 会自动失效；必要时 `npm run verify -- inbound 60 --reset` 清理 `.tmp-probe/gateway-session.json` |
 | 错误码 `40034024` / `40034005` | `msg_id` 无效或已过期（被动回复必须在 5 分钟内） |

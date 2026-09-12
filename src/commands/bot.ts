@@ -75,6 +75,8 @@ export interface MessageHandlingDeps {
   allowedGroups?: Set<string>;
   /** 图片输出目录；设置后会把 PNG 落盘便于排查 */
   imageOutputDir?: string;
+  /** 是否落盘调试图片；false 时完全不写磁盘（线上推荐） */
+  debugImages?: boolean;
   /** 图片中文字体 */
   fontFiles?: string[];
   renderer?: typeof renderPng;
@@ -293,8 +295,7 @@ export class GroupMessageHandler {
       });
       png = image.png;
       // 调试图仅用于排查，落盘失败不影响发送
-      await this.saveDebugImage(`${message.messageId}-${kind}`, png);
-    } catch (error) {
+      await this.saveDebugImage(`${message.messageId}-${kind}`, png);    } catch (error) {
       logger.error(`${kindLabel}图片渲染失败：${describeError(error)}`);
       return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
     }
@@ -383,15 +384,23 @@ export class GroupMessageHandler {
   /**
    * 落盘调试图片，便于排查渲染问题。
    * 文件名带 pid 与随机串：并发任务或多个进程同时运行时不会互相覆盖。
+   * 线上可设 DEBUG_IMAGES=false 关闭，避免往容器磁盘反复写图。
    */
-  private async saveDebugImage(tag: string, png: Buffer): Promise<string> {
-    const dir = this.deps.imageOutputDir ?? join(process.cwd(), '.tmp-probe', 'images');
-    await mkdir(dir, { recursive: true });
-    const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
-    const filePath = join(dir, `market-${sanitize(tag)}-${Date.now()}-${suffix}.png`);
-    await writeFile(filePath, png);
-    this.logger.debug(`调试图片已保存：${filePath}`);
-    return filePath;
+  private async saveDebugImage(tag: string, png: Buffer): Promise<string | null> {
+    if (this.deps.debugImages === false) return null;
+    try {
+      const dir = this.deps.imageOutputDir ?? join(process.cwd(), '.tmp-probe', 'images');
+      await mkdir(dir, { recursive: true });
+      const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
+      const filePath = join(dir, `market-${sanitize(tag)}-${Date.now()}-${suffix}.png`);
+      await writeFile(filePath, png);
+      this.logger.debug(`调试图片已保存：${filePath}`);
+      return filePath;
+    } catch (error) {
+      // 调试图只是排查手段，写不进去不能影响正常发送
+      this.logger.warn(`保存调试图片失败（忽略）：${describeError(error)}`);
+      return null;
+    }
   }
 }
 

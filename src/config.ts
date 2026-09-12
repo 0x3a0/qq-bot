@@ -51,6 +51,18 @@ const rawSchema = z.object({
   LOG_EVENTS: boolSchema,
   /** 是否允许用持久化会话 Resume。默认 false：始终新建会话，避免复用"死会话"后收不到事件。 */
   SESSION_RESUME: boolSchema,
+  /** 单实例保护：默认开启；容器平台跨部署 pid 会重复，已按运行环境判定 */
+  INSTANCE_LOCK: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => (value ?? '').trim().toLowerCase() !== 'false'),
+  /** 是否把渲染出的图片落盘到 .tmp-probe/images（仅供本地排查）；默认开启，线上建议关闭 */
+  DEBUG_IMAGES: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => (value ?? '').trim().toLowerCase() !== 'false'),
   /** Resume 后的观察窗口（毫秒）：窗口内没收到任何事件则判定会话已失效并重新 Identify */
   RESUME_GRACE_MS: z
     .string()
@@ -92,6 +104,8 @@ export interface AppConfig {
   logLevel: z.infer<typeof logLevelSchema>;
   logEvents: boolean;
   sessionResume: boolean;
+  instanceLock: boolean;
+  debugImages: boolean;
   resumeGraceMs: number;
   marketCacheTtlMs: number;
   fontFiles: string[];
@@ -128,6 +142,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel: raw.LOG_LEVEL,
     logEvents: raw.LOG_EVENTS,
     sessionResume: raw.SESSION_RESUME,
+    instanceLock: raw.INSTANCE_LOCK,
+    debugImages: raw.DEBUG_IMAGES,
     resumeGraceMs: raw.RESUME_GRACE_MS,
     marketCacheTtlMs: raw.MARKET_CACHE_TTL_MS,
     fontFiles: splitList(raw.FONT_FILES),

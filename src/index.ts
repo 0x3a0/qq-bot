@@ -19,7 +19,7 @@ import { GatewayClient, type GatewayEvent } from './qq/gateway.js';
 import { SessionStore } from './qq/session-store.js';
 import { TokenManager } from './qq/token.js';
 import { CLOSE_CODE_MEANING, extractMessageIndex, type GroupAtMessageCreateData } from './qq/types.js';
-import { join } from 'node:path';
+import { reportFontSupport } from './render/font-check.js';import { join } from 'node:path';
 
 async function main(): Promise<void> {
   const env = loadDotEnv();
@@ -32,8 +32,9 @@ async function main(): Promise<void> {
 
   // 单实例保护：两个进程连同一机器人时，平台会把同一条群消息投递给两个连接，
   // 于是每个指令被回复两遍。这里在连接前直接拒绝启动。
+  // 容器环境（Railway 等）跨部署 pid 会重复，锁按「运行环境 + pid」双重判定。
   const lockPath = join(process.cwd(), '.tmp-probe', 'bot.lock');
-  const lock = acquireLock(lockPath, logger);
+  const lock = acquireLock({ filePath: lockPath, logger, enabled: config.instanceLock });
   if (!lock.ok) {
     logger.error(
       `已有另一个机器人在运行（pid=${lock.holder.pid}，启动于 ${lock.holder.startedAt}），` +
@@ -50,6 +51,10 @@ async function main(): Promise<void> {
     logger.info('提示：排查 @ 事件时可设置 LOG_EVENTS=true 打印全部事件');
   }
 
+  // 字体自检：容器镜像常常没有中文字体，此时 resvg 不报错但图里没有文字，
+  // 属于静默故障，所以在启动阶段就给明确告警。
+  reportFontSupport(logger, { fontFiles: config.fontFiles });
+
   const tokens = new TokenManager({
     appId: config.appId,
     clientSecret: config.clientSecret,
@@ -65,6 +70,7 @@ async function main(): Promise<void> {
     logger,
     dedupe: new MessageDeduplicator(),
     imageOutputDir: config.imageOutputDir,
+    debugImages: config.debugImages,
     fontFiles: config.fontFiles,
   });
 
