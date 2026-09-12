@@ -1,0 +1,39 @@
+{
+  "name": "qq-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QQ 群机器人行情图片 MVP（A 股行业板块 Treemap）",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test",
+    "render:sample": "tsx scripts/render-sample.ts",
+    "verify:qq": "tsx scripts/verify-qq-access.ts",
+    "verify:inbound": "tsx scripts/verify-inbound.ts",
+    "verify:market": "tsx scripts/verify-market.ts",
+    "verify:baidu-blocks-doc": "node scripts/verify-baidu-blocks-doc.mjs"
+  },
+  "dependencies": {
+    "d3-hierarchy": "^3.1.2",
+    "@resvg/resvg-js": "^2.6.2",
+    "undici": "^7.16.0",
+    "ws": "^8.18.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/d3-hierarchy": "^3.1.7",
+    "@types/node": "^22.15.3",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
