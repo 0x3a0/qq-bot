@@ -103,6 +103,17 @@ describe('TokenManager', () => {
     await expect(manager.getToken()).rejects.toThrow(/Access Token 失败/);
   });
 
+  it('HTTP 200 但带错误码时透出平台错误信息', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ code: 100007, message: 'appid invalid' }));
+    const manager = new TokenManager({
+      appId: 'app',
+      clientSecret: 'secret',
+      logger,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(manager.getToken()).rejects.toThrow(/100007：appid invalid/);
+  });
+
   it('响应缺少 access_token 时抛出错误', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ message: 'ok' }));
     const manager = new TokenManager({
@@ -111,7 +122,7 @@ describe('TokenManager', () => {
       logger,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    await expect(manager.getToken()).rejects.toThrow(/缺少 access_token/);
+    await expect(manager.getToken()).rejects.toThrow(/Access Token 失败/);
   });
 
   it('invalidate 后重新请求', async () => {

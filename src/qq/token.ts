@@ -15,6 +15,30 @@ const tokenResponseSchema = z.object({
   expires_in: z.union([z.string(), z.number()]).optional(),
 });
 
+/** 失败响应体，用于把平台的错误码/错误信息透出到日志。 */
+const tokenErrorSchema = z.object({
+  code: z.union([z.number(), z.string()]).optional(),
+  err_code: z.union([z.number(), z.string()]).optional(),
+  message: z.string().optional(),
+  msg: z.string().optional(),
+});
+
+function describeTokenFailure(text: string): string {
+  try {
+    const parsed = tokenErrorSchema.safeParse(JSON.parse(text));
+    if (parsed.success) {
+      const code = parsed.data.code ?? parsed.data.err_code;
+      const message = parsed.data.message ?? parsed.data.msg;
+      if (code !== undefined || message) {
+        return `错误码 ${code ?? '未知'}${message ? `：${message}` : ''}`;
+      }
+    }
+  } catch {
+    /* 非 JSON 响应，回退到原始文本 */
+  }
+  return text.slice(0, 300);
+}
+
 export interface AccessToken {
   token: string;
   /** 绝对过期时间戳（毫秒） */
@@ -73,7 +97,7 @@ export class TokenManager {
 
       const text = await response.text();
       if (!response.ok) {
-        throw new Error(`获取 Access Token 失败：HTTP ${response.status} ${text.slice(0, 500)}`);
+        throw new Error(`获取 Access Token 失败：HTTP ${response.status} ${describeTokenFailure(text)}`);
       }
 
       let json: unknown;
@@ -85,7 +109,8 @@ export class TokenManager {
 
       const parsed = tokenResponseSchema.safeParse(json);
       if (!parsed.success) {
-        throw new Error(`获取 Access Token 失败：响应缺少 access_token：${text.slice(0, 500)}`);
+        // 平台会以 HTTP 200 + 错误码返回失败，例如 100007 appid invalid
+        throw new Error(`获取 Access Token 失败：${describeTokenFailure(text)}`);
       }
 
       const expiresInSec = Number(parsed.data.expires_in ?? 7200);
