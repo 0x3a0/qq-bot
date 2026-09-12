@@ -7,6 +7,9 @@ dist/
 .tmp-probe/
 *.log
 
+# 构建阶段下载的字体（17MB，不入库；见 scripts/fetch-font.mjs）
+assets/fonts/
+
 # 本地 npm 缓存（沙箱环境下缓存目录被重定向到工作区）
 .npm-cache/
 

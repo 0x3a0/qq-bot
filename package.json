@@ -9,9 +9,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prebuild": "node scripts/fetch-font.mjs",
     "prestart": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "fetch-font": "node scripts/fetch-font.mjs",
     "verify": "tsx scripts/verify.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

@@ -3,6 +3,8 @@
  * 本地开发使用 .env 文件（由 src/env.ts 加载，不覆盖已存在的环境变量）。
  */
 import { z } from 'zod';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /** 事件订阅 Intents 位。官方文档：GROUP_AND_C2C_EVENT = 1 << 25。 */
 export const INTENT_GROUP_AND_C2C_EVENT = 1 << 25;
@@ -148,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   const raw = parsed.data;
+  const configuredFonts = splitList(raw.FONT_FILES);
   return {
     appId: raw.APP_ID,
     clientSecret: raw.CLIENT_SECRET,
@@ -162,8 +165,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     debugImages: raw.DEBUG_IMAGES,
     resumeGraceMs: raw.RESUME_GRACE_MS,
     marketCacheTtlMs: raw.MARKET_CACHE_TTL_MS,
-    fontFiles: splitList(raw.FONT_FILES),
+    // 未显式配置时，使用构建阶段下载到仓库里的字体（部署环境通常没有中文字体）
+    fontFiles: configuredFonts.length > 0 ? configuredFonts : detectBundledFonts(),
     imageOutputDir: raw.IMAGE_OUTPUT_DIR && raw.IMAGE_OUTPUT_DIR.length > 0 ? raw.IMAGE_OUTPUT_DIR : '.tmp-probe/images',
     port: raw.PORT,
   };
 }
+
+/**
+ * 探测构建阶段放好的自带字体。
+ *
+ * 部署环境（Render 的 Debian 12 原生运行时、多数容器镜像）没有中文字体，
+ * 而 resvg 缺字形时只会画「框框」且不报错。`scripts/fetch-font.mjs` 会在
+ * 构建时把 Noto Sans SC 放到 assets/fonts/，这里自动使用它，
+ * 免去手动配置 FONT_FILES。
+ */
+export function detectBundledFonts(baseDir: string = process.cwd()): string[] {
+  return BUNDLED_FONT_CANDIDATES.map((relative) => resolve(baseDir, relative)).filter((file) => existsSync(file));
+}
+
+/** 自带动体的候选路径（按优先级） */
+export const BUNDLED_FONT_CANDIDATES = [
+  'assets/fonts/NotoSansSC-Regular.ttf',
+  'assets/fonts/NotoSansSC-VF.ttf',
+];

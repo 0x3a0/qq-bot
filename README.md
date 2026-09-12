@@ -356,31 +356,43 @@ Render 免费 Web 实例在 **15 分钟**内既没有 HTTP 请求、也没有收
 
 再访问 `https://<你的服务>.onrender.com/health`，应返回 `ok`（Gateway 未就绪时返回 503）。
 
-### 中文字体
+### 中文字体（已自动处理）
 
-Render 的原生 Node 运行时不保证带 CJK 字体。**缺少时 resvg 不会报错，只会画不出文字**
-（图片变成只有色块），因此启动时会做字体探针并明确告警。处理方式：
+Render 的原生运行时是 **Debian 12，不带任何中文字体**（官方工具清单里没有字体包），
+而 resvg 缺字形时**不会报错**——只会画成一排「框框」。
 
-```bash
-# Render Dashboard → Shell
-fc-list :lang=zh | head        # 有输出说明系统已有中文字体
-find / -name "*NotoSansCJK*" 2>/dev/null | head
+现已自动化，通常**无需任何配置**：
+
+1. **构建阶段**自动下载 Noto Sans SC（OFL-1.1）到 `assets/fonts/` 并校验 SHA-256
+   （`scripts/fetch-font.mjs`，由 `prebuild` 触发）。字体 17MB，因此不入库。
+2. **运行时**自动发现并使用它（`detectBundledFonts()`），无需手动设 `FONT_FILES`。
+   启动日志会说明字体来源：
+
+```text
+[INFO] [app] 字体检查通过（探针 2531B），使用自带字体（1 个文件）
 ```
 
-若系统完全没有中文字体，最可靠的办法是**把字体文件放进仓库**随代码部署：
+若构建日志出现 `[fetch-font] ⚠️ 字体下载失败`，可以：
 
 ```bash
-# 例如放一份思源黑体子集
-fonts/NotoSansSC-Regular.otf
-# 然后设 Variables：FONT_FILES=fonts/NotoSansSC-Regular.otf
+# 换个更快的镜像重下（国内访问 GitHub 可能很慢，实测本机 17MB 用了 2 分钟）
+FONT_DOWNLOAD_URL=https://mirror.example.com/NotoSansSC-VF.ttf npm run fetch-font
+
+# 或直接把字体文件放进 assets/fonts/，程序会自动识别
+# 或用 FONT_FILES 指向任意已有的中文字体
+FONT_FILES=/path/to/NotoSansSC-Regular.otf
 ```
+
+> 上游字体若更新，SHA-256 校验会失败并给出明确提示（需同步改脚本里的期望值）。
+> **想要离线可构建**，可把字体文件提交进仓库（把 `assets/fonts/` 从 `.gitignore`
+> 移除），代价是仓库体积增加约 17MB。
 
 ## 常见问题
 
 | 现象 | 排查方向 |
 |---|---|
 | **同一个指令被回复了两遍 / 收到重复图片** | 多半是两个实例同时连着同一机器人（平台会把同一条消息投递给每个连接）。可能有三种原因：① 本地开了两个进程（程序有单实例保护会直接拒绝启动，锁文件在 `.tmp-probe/bot.lock`）；② 平台副本数 > 1；③ **Render 等平台的零停机部署**——新旧实例会并存约 60 秒，需在平台设置里关闭 |
-| **图片有色块但没有文字** | 容器缺中文字体（resvg 静默失败）。看启动日志的字体检查告警，按部署章节的字体部分处理 |
+| **图片中文显示为「框框」/ 有色块没文字** | 环境缺中文字体（resvg 静默失败，不报错）。构建阶段本应自动下载字体，看构建日志有无 `[fetch-font] ⚠️`；也可 `npm run fetch-font` 手动补下，或用 `FONT_FILES` 指向已有中文字体 |
 | **部署一段时间后机器人不响应，日志也停了** | Render 免费实例 15 分钟无流量会休眠。改用付费实例或 Background Worker |
 | 部署后立刻退出 | 多半是没配 `APP_ID` / `CLIENT_SECRET`（`.env` 不在仓库里）。日志会打印「配置校验失败」 |
 | Render 部署失败并提示未绑定端口 | Web Service 必须监听 `PORT`。程序会在检测到 `PORT` 时自动开一个仅含 `/health` 的监听；若日志报了端口监听失败，检查 `PORT` 是否被其他进程占用 |
@@ -392,7 +404,6 @@ fonts/NotoSansSC-Regular.otf
 | 错误码 `850019` | 富媒体文件格式不支持：分片上传了空内容（多为分片偏移算错，见下方「已知实现要点」） |
 | 错误码 `850026` | URL 上传时 platform 下载失败（本地开发请用分片上传，本项目已默认使用） |
 | 错误码 `11251` / `100016` | `APP_ID` / `CLIENT_SECRET` 不正确 |
-| 图片中文显示为方块 | 系统缺少中文字体，用 `FONT_FILES=C:\Windows\Fonts\msyh.ttc` 显式指定 |
 | 关闭码 4914 | 机器人已下架 / 环境不匹配，需确认沙箱与正式环境配置 |
 
 ## 说明

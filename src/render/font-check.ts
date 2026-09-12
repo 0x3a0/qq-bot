@@ -65,6 +65,15 @@ export function checkFontSupport(options: { fontFiles?: string[] } = {}): FontCh
 export function reportFontSupport(logger: Logger, options: { fontFiles?: string[] } = {}): boolean {
   try {
     const result = checkFontSupport(options);
+    const sources = options.fontFiles ?? [];
+    // 区分「用户显式配置」与「构建阶段自带的字体」，便于定位
+    const describeSource = (): string => {
+      if (sources.length === 0) return '使用系统字体';
+      const bundled = sources.filter((file) => file.includes('assets/fonts') || file.includes('assets\\fonts'));
+      if (bundled.length === sources.length) return `使用自带字体（${bundled.length} 个文件）`;
+      if (bundled.length === 0) return `使用 FONT_FILES 指定的 ${sources.length} 个字体文件`;
+      return `使用 FONT_FILES 指定 + 自带的共 ${sources.length} 个字体文件`;
+    };
 
     if (result.missingFontFiles.length > 0) {
       logger.error(
@@ -76,12 +85,7 @@ export function reportFontSupport(logger: Logger, options: { fontFiles?: string[
     }
 
     if (result.ok) {
-      logger.info(
-        `字体检查通过（探针 ${result.bytes}B）` +
-          (result.fontFiles.length > 0
-            ? `，使用 FONT_FILES 指定的 ${result.fontFiles.length} 个字体文件`
-            : '，使用系统字体'),
-      );
+      logger.info(`字体检查通过（探针 ${result.bytes}B），${describeSource()}`);
       return true;
     }
 
@@ -90,8 +94,8 @@ export function reportFontSupport(logger: Logger, options: { fontFiles?: string[
         '生成的图片会没有文字（只剩色块），但不会报错。',
     );
     logger.error(
-      '  排查：容器镜像通常不自带中文字体。用 FONT_FILES 指定字体文件路径，' +
-        '或安装字体（Debian: fonts-noto-cjk；Nix: noto-fonts-cjk-sans）后确认 fontconfig 能找到它。',
+      '  排查：容器镜像通常不自带中文字体。执行 `npm run fetch-font` 下载自带字体，' +
+        '或用 FONT_FILES 指定系统里已有的中文字体。',
     );
     return false;
   } catch (error) {
