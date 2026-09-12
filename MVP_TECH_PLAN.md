@@ -155,6 +155,7 @@ npm start                    # 启动机器人，群内 @机器人 大盘 出图
 | Access Token 自动刷新 | `src/qq/token.ts`（提前 5 分钟刷新，合并并发请求） |
 | WebSocket 心跳、断线重连与 Resume | `src/qq/gateway.ts`（按官方错误码决定 resume 或 identify） |
 | `msg_id + msg_seq` 去重 | `src/qq/dedupe.ts` |
+| 会话持久化（重启后 Resume） | `src/qq/session-store.ts`（缓存绑定 AppID 与接入点，换账号自动失效） |
 | 行情短时缓存和失败兜底 | `src/market/eastmoney.ts`、`src/market/cache.ts`、`src/commands/bot.ts` |
 | 全量行业取数、成交额排序与前 20 筛选 | `src/market/eastmoney.ts` |
 | 富媒体分片上传（本地开发无需公网 URL） | `src/qq/api-client.ts` |

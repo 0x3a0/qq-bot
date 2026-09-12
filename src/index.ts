@@ -55,16 +55,28 @@ async function main(): Promise<void> {
     logger,
   });
 
+  // 会话缓存绑定 AppID：更换机器人账号后不会复用上一个 bot 的会话
+  const sessionOwner = { appId: config.appId, apiBase: config.apiBase };
+  const loaded = sessionStore.loadFor(sessionOwner);
+  if (loaded.status === 'stale-app') {
+    logger.warn(
+      `已丢弃不属于当前机器人的会话缓存（缓存 AppID=${loaded.previous.appId ?? '未记录'}，当前=${config.appId}），将重新鉴权`,
+    );
+    sessionStore.clear();
+  } else if (loaded.status === 'found') {
+    logger.info(`找到本机器人的历史会话，将尝试 Resume（seq=${loaded.session.lastSeq}）`);
+  }
+
   const gateway = new GatewayClient({
     tokens,
     intents: config.intents,
     logger,
     gatewayUrl: config.gatewayUrl,
     fetchGatewayUrl: () => api.getGatewayUrl(),
-    session: sessionStore.load(),
+    session: loaded.status === 'found' ? loaded.session : null,
     onSessionChange: (session) => {
       // 保存最新 seq，进程重启后可以 Resume 补发漏掉的事件
-      if (session) sessionStore.save(session);
+      if (session) sessionStore.save(session, sessionOwner);
     },
   });
 

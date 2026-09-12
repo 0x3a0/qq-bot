@@ -46,12 +46,18 @@ npm run render:sample      # 输出 .tmp-probe/preview/market-sample.png
 npm run verify:qq
 
 # ★ 验证能否正常收到 QQ 群用户的消息（只监听，不回复）
-npm run verify:inbound          # 默认等待 5 分钟
-npm run verify:inbound -- 60    # 等待 60 秒
+npm run verify:inbound                # 默认等待 5 分钟
+npm run verify:inbound -- 60          # 等待 60 秒
+npm run verify:inbound -- 60 --reset  # 更换过机器人账号时，先清理会话缓存
 ```
 
-`verify:inbound` 期间到测试群发送 `@机器人 大盘`，成功时会打印完整的
-`GROUP_AT_MESSAGE_CREATE` 事件体（`msg_id`、`group_openid`、`member_openid`、`content` 等）。
+`verify:inbound` 会先打印当前 APP_ID、接入点、凭据对应的机器人昵称与 ID，
+再等待群 @ 事件。成功时会打印完整的 `GROUP_AT_MESSAGE_CREATE` 事件体
+（`msg_id`、`group_openid`、`member_openid`、`content` 等）。
+
+> 会话缓存说明：`.tmp-probe/gateway-session.json` 保存 Gateway 的 `session_id` 与 `seq`，
+> 用于进程重启后 Resume。缓存**绑定 AppID 与接入点**，更换账号时会自动丢弃并重新鉴权；
+> 如需强制清理可加 `--reset` 或直接删除该文件。
 
 ### 4. 启动机器人
 
@@ -131,6 +137,7 @@ npm run check       # 类型检查 + 测试
 | 现象 | 排查方向 |
 |---|---|
 | `verify:inbound` 超时收不到事件 | 机器人是否已加入该群；群里 @ 的是否是这个机器人；沙箱群需 `QQ_ENV=sandbox` |
+| 换了 APP_ID 却仍连上上一个机器人 | 已修复：会话缓存绑定 AppID 会自动失效；必要时 `npm run verify:inbound -- 60 --reset` 清理 `.tmp-probe/gateway-session.json` |
 | 错误码 `40034024` / `40034005` | `msg_id` 无效或已过期（被动回复必须在 5 分钟内） |
 | 错误码 `40054005` | 消息被去重，检查 `msg_seq` 是否重复 |
 | 错误码 `850031` | 上传文件超过大小限制 |
