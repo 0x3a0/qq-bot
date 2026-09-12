@@ -183,7 +183,7 @@ GET https://push2delay.eastmoney.com/api/qt/stock/fflow/kline/get
 - `f62 = f66 + f72`（主力 = 超大单 + 大单）在 496/496、504/504 个板块上**严格成立**，5 日 / 10 日同样成立。
 - 接口返回顺序确为按 `fid` 降序；`f62 + f78 + f84 ≈ 0`（资金守恒，偏差来自服务端四舍五入）。
 
-完整字段表、主机可用性对比与全部踩坑记录见 [README](./README.md#东方财富资金流接口行业--概念)；
+完整字段表、主机可用性对比与全部踩坑记录见 [README](../README.md#东方财富资金流接口行业--概念)；
 代码入口为 `src/market/fundflow.ts`。
 
 ### 图片
@@ -250,7 +250,7 @@ Render 服务（Web Service 或 Background Worker）
 - 记录 Gateway 连接、心跳、重连和消息发送日志。
 - 不依赖本地磁盘保存重要数据；MVP 的短期缓存和去重状态放在进程内。
 
-完整步骤与排查见 [README](./README.md#部署到-render)。
+完整步骤与排查见 [README](../README.md#部署到-render)。
 
 本 MVP 暂不实现 Webhook，也不部署到 Vercel。后续如需要 Serverless 再单独设计 Webhook + 队列架构。
 

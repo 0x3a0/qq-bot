@@ -3,7 +3,7 @@
 > 目标读者：维护者本人 / 后续接手的人。
 > 定位：在现有「群 @ 机器人」实现之上，**增量**支持 QQ 单聊（私聊）场景，
 > 复用同一套取数、渲染与指令语义，只给出方向与关键决策，不含逐行实现。
-> 现状基线见 [MVP_TECH_PLAN.md](../MVP_TECH_PLAN.md)，字段与踩坑见
+> 现状基线见 [MVP_TECH_PLAN.md](./MVP_TECH_PLAN.md)，字段与踩坑见
 > [API_EASTMONEY_FUNDFLOW.md](./API_EASTMONEY_FUNDFLOW.md)、[DEPLOYMENT.md](./DEPLOYMENT.md)。
 
 ## 1. 目标与非目标

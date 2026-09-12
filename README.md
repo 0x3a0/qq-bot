@@ -3,15 +3,9 @@
 群成员在 QQ 群里 `@机器人 大盘`，机器人被动回复**两张** Treemap 热力图：
 行业板块 TOP25 与概念板块 TOP25（按主力净流入额排序）。
 
-技术方案见 [MVP_TECH_PLAN.md](./MVP_TECH_PLAN.md)。
+相关文档（均在 `docs/` 下）：
 
-- 事件接入：QQ 机器人 API v2 · Gateway WebSocket · `GROUP_AT_MESSAGE_CREATE`
-- 数据源：东方财富板块资金流接口（行业 `fs=m:90 t:2` / 概念 `fs=m:90 t:3`，按 `f62` 主力净流入排序）
-- 出图：d3-hierarchy squarified Treemap → SVG → PNG（`@resvg/resvg-js`）
-- 回复：群聊富媒体上传拿 `file_info` → `msg_type=7` 被动回复，两张图各自渲染完即发
-
-相关文档：
-
+- [docs/MVP_TECH_PLAN.md](./docs/MVP_TECH_PLAN.md) —— MVP 技术方案（接入方式、数据源、部署与验收标准）
 - [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) —— 部署、字体、故障排查、踩坑记录、性能实测
 - [docs/API_EASTMONEY_FUNDFLOW.md](./docs/API_EASTMONEY_FUNDFLOW.md) —— 东方财富资金流接口字段与实测校验
 - [docs/TECH_PLAN_C2C.md](./docs/TECH_PLAN_C2C.md) —— 单聊（C2C）指令支持的技术方向（待实现）
