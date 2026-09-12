@@ -94,6 +94,97 @@ afterEach(async () => {
 });
 
 describe('GroupMessageHandler', () => {
+  it('★ 文字榜单在图片渲染之前发出（取数完成即发，不必等渲染与上传）', async () => {
+    const order: string[] = [];
+
+    const renderer = vi.fn((_options: unknown) => {
+      order.push('render');
+      return {
+        png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        svg: '<svg/>',
+        width: 1200,
+        height: 900,
+        tiles: [],
+      };
+    });
+
+    const { handler } = createHarness({
+      imageOutputDir: tempDir,
+      renderer: renderer as unknown as MessageHandlingDeps['renderer'],
+      api: {
+        uploadGroupFileFromPath: vi.fn(async () => {
+          order.push('upload');
+          return { fileInfo: 'F' };
+        }),
+        sendGroupImage: vi.fn(async () => {
+          order.push('sendImage');
+          return {};
+        }),
+        sendGroupText: vi.fn(async () => {
+          order.push('sendText');
+          return {};
+        }),
+      } as unknown as MessageHandlingDeps['api'],
+    });
+
+    expect(await handler.handle(message)).toBe('image-sent');
+    expect(order).toEqual(['sendText', 'render', 'upload', 'sendImage']);
+  });
+
+  it('★ 取数失败时不会先发榜单，只发一条错误说明', async () => {
+    const order: string[] = [];
+    const renderer = vi.fn(() => {
+      order.push('render');
+      throw new Error('不应被调用');
+    });
+
+    const { handler } = createHarness({
+      imageOutputDir: tempDir,
+      renderer: renderer as unknown as MessageHandlingDeps['renderer'],
+      market: {
+        getIndustrySnapshot: async () => {
+          throw new Error('东方财富接口 HTTP 502');
+        },
+      },
+      api: {
+        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        sendGroupImage: vi.fn(async () => ({})),
+        sendGroupText: vi.fn(async (params: { content: string }) => {
+          order.push(`sendText:${params.content.slice(0, 6)}`);
+          return {};
+        }),
+      } as unknown as MessageHandlingDeps['api'],
+    });
+
+    expect(await handler.handle(message)).toBe('fallback-sent');
+    expect(order).toEqual(['sendText:行业板块数据']);
+    expect(renderer).not.toHaveBeenCalled();
+  });
+
+  it('★ 文字榜单已送达后图片失败，只补一条失败说明（不重发榜单）', async () => {
+    const sentTexts: string[] = [];
+    const { handler } = createHarness({
+      imageOutputDir: tempDir,
+      renderer: (() => {
+        throw new Error('resvg 渲染失败');
+      }) as unknown as MessageHandlingDeps['renderer'],
+      api: {
+        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        sendGroupImage: vi.fn(async () => ({})),
+        sendGroupText: vi.fn(async (params: { content: string }) => {
+          sentTexts.push(params.content);
+          return {};
+        }),
+      } as unknown as MessageHandlingDeps['api'],
+    });
+
+    expect(await handler.handle(message)).toBe('fallback-sent');
+    expect(sentTexts).toHaveLength(2);
+    expect(sentTexts[0]).toContain('行业板块成交额 TOP30');
+    expect(sentTexts[1]).toContain('图片生成失败');
+    expect(sentTexts[1]).not.toContain('行业板块成交额 TOP30');
+  });
+
   it('★ 大盘指令：先发文字 TOP30 榜单，再发图片（msg_seq 递增）', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     const outcome = await handler.handle(message);
@@ -193,7 +284,7 @@ describe('GroupMessageHandler', () => {
     expect(calls.images).toHaveLength(0);
   });
 
-  it('行情数据失败时返回文字兜底', async () => {
+  it('行情数据失败时只发一条错误说明（无数据可发榜单）', async () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       market: {
@@ -206,12 +297,12 @@ describe('GroupMessageHandler', () => {
     expect(outcome).toBe('fallback-sent');
     expect(calls.images).toHaveLength(0);
     expect(calls.texts).toHaveLength(1);
-    expect(calls.texts[0]?.content).toContain('图片生成失败');
-    // 兜底文案使用认领到的第 1 个序号（全局按 msg_id 递增，不再硬编码）
+    expect(calls.texts[0]?.content).toContain('获取失败');
+    expect(calls.texts[0]?.content).not.toContain('TOP30');
     expect(calls.texts[0]?.msgSeq).toBe(1);
   });
 
-  it('渲染失败时降级为文字 TOP10', async () => {
+  it('渲染失败时：榜单已送达，补一条失败说明', async () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       renderer: (() => {
@@ -220,8 +311,10 @@ describe('GroupMessageHandler', () => {
     });
     const outcome = await handler.handle(message);
     expect(outcome).toBe('fallback-sent');
-    expect(calls.texts[0]?.content).toContain('TOP10');
-    expect(calls.texts[0]?.content).toContain('板块0');
+    expect(calls.texts).toHaveLength(2);
+    expect(calls.texts[0]?.content).toContain('行业板块成交额 TOP30');
+    expect(calls.texts[1]?.content).toContain('图片生成失败');
+    expect(calls.images).toHaveLength(0);
   });
 
   it('★ 发图被判重（40054005）时换 msg_seq 重试，最终发图成功', async () => {
@@ -279,7 +372,7 @@ describe('GroupMessageHandler', () => {
     expect(calls.texts).toHaveLength(1);
   });
 
-  it('★ 上传失败时用文字兜底，且不重复占用同一 msg_seq', async () => {
+  it('★ 上传失败时：榜单已送达，补一条失败说明，且不重复占用 msg_seq', async () => {
     const uploadMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('分片上传失败'))
@@ -300,10 +393,14 @@ describe('GroupMessageHandler', () => {
     });
 
     expect(await handler.handle(message)).toBe('fallback-sent');
+    // 榜单 + 失败说明
+    expect(calls.texts).toHaveLength(2);
+    expect(calls.texts[0]?.msgSeq).toBe(1);
+    expect(calls.texts[1]?.msgSeq).toBe(2);
     // 同一 msg_id 的重投事件不再重复处理（避免重复回复）
     expect(await handler.handle(message)).toBe('duplicate');
-    expect(calls.texts).toHaveLength(1);
-    expect(calls.texts[0]?.msgSeq).toBe(1);
+    expect(calls.texts).toHaveLength(2);
+    expect(calls.images).toHaveLength(0);
   });
 
   it('★ 同一 msg_id 被重投时使用不同的 msg_seq，不再撞平台判重', async () => {

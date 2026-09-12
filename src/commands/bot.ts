@@ -16,7 +16,6 @@ import {
   formatQuoteTime,
   formatRankingFooter,
   formatRankingTitle,
-  formatTurnover,
 } from '../market/format.js';
 import type { MarketProvider } from '../market/types.js';
 import { MAX_TOP_BLOCKS, takeTopBlocks } from '../market/eastmoney.js';
@@ -196,14 +195,62 @@ export class GroupMessageHandler {
     return result.seq === null ? 'reply-limit' : 'ignored';
   }
 
+  /**
+   * 大盘：取数排序筛出 TOP30 后「立刻」发文字榜单，再渲染并发送图片。
+   *
+   * 顺序设计：文字只需取数结果，图片还要渲染（约 1.5~2.4s）+ 分片上传（约 1.6s）。
+   * 因此文字先发，用户不必等图片链路完成就能看到数据。
+   */
   private async replyMarket(message: GroupMessage): Promise<MessageHandlingOutcome> {
     const { api, market, logger } = this.deps;
 
+    let snapshot;
+    let top;
     try {
-      const snapshot = await market.getIndustrySnapshot();
-      const top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
+      snapshot = await market.getIndustrySnapshot();
+      top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
       if (top.length === 0) throw new Error('没有可用的行业板块数据');
+    } catch (error) {
+      // 取数就失败：没有数据可发，直接给一条错误说明
+      logger.error(`行情数据获取失败：${describeError(error)}`);
+      const textOutcome = await this.replyText(message, this.buildFetchFailureText(error));
+      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
+    }
 
+    // ① 数据已就绪，立刻发文字榜单（占用 seq=1）
+    const rankingText = formatBlockRanking(top, {
+      title: formatRankingTitle(top.length),
+      footer: formatRankingFooter({
+        source: snapshot.source,
+        quoteTime: snapshot.quoteTime,
+        fetchedAt: snapshot.fetchedAt,
+        ...(this.deps.now ? { now: this.deps.now() } : {}),
+      }),
+    });
+
+    const ranking = await this.sendWithSeq(message, (seq) =>
+      api.sendGroupText({
+        groupOpenid: message.groupOpenid,
+        content: rankingText,
+        msgId: message.messageId,
+        msgSeq: seq,
+      }),
+    );
+
+    if (ranking.ok) {
+      logger.info(
+        `已发送文字榜单：group=${message.groupOpenid} seq=${ranking.seq} ` +
+          `板块=${top.length} 长度=${rankingText.length}`,
+      );
+    } else if (ranking.seq === null) {
+      logger.error('被动回复次数已用尽，文字榜单未发送，跳过图片发送');
+      return 'reply-limit';
+    } else {
+      logger.warn('文字榜单发送失败，继续尝试发送图片');
+    }
+
+    // ② 渲染 + 上传 + 发送图片（占用后续 msg_seq）
+    try {
       const renderer = this.deps.renderer ?? renderPng;
       const image = renderer({
         blocks: top,
@@ -220,26 +267,6 @@ export class GroupMessageHandler {
         fileName: `market-${Date.now()}.png`,
         fileType: 1,
       });
-
-      // 先发文字榜单，再发图片：两次回复使用递增的 msg_seq（平台要求不同序号）
-      const ranking = formatBlockRanking(top, {
-        title: formatRankingTitle(top.length),
-        footer: formatRankingFooter({
-          source: snapshot.source,
-          quoteTime: snapshot.quoteTime,
-          fetchedAt: snapshot.fetchedAt,
-          ...(this.deps.now ? { now: this.deps.now() } : {}),
-        }),
-      });
-
-      const textSent = await this.replyText(message, ranking);
-      if (textSent === 'reply-limit') {
-        logger.error('被动回复次数已用尽，文字榜单未发送，跳过图片发送');
-        return 'reply-limit';
-      }
-      if (textSent !== 'text-sent') {
-        logger.warn('文字榜单发送失败，继续尝试发送图片');
-      }
 
       const sent = await this.sendWithSeq(message, (seq) =>
         api.sendGroupImage({
@@ -260,43 +287,26 @@ export class GroupMessageHandler {
       }
 
       if (sent.seq === null) {
-        // 被动回复次数已用尽：文字榜单已发出，用户至少能看到数据
+        // 序号用尽：文字榜单已送达，用户至少能看到数据
         logger.error('被动回复次数已用尽，图片未发送（文字榜单已送达）');
         return 'reply-limit';
       }
 
       // 文字榜单已经在前面发过了，这里只补一句失败说明
-      await this.replyText(message, await this.buildFallbackText(sent.error));
+      await this.replyText(message, `图片发送失败：${describeError(sent.error).split('\n')[0] ?? '未知错误'}`);
       return 'fallback-sent';
     } catch (error) {
       logger.error(`生成或发送行情图片失败：${describeError(error)}`);
-      const textOutcome = await this.replyText(message, await this.buildFallbackText(error));
-      return textOutcome === 'text-sent' ? 'fallback-sent' : textOutcome;
+      // 榜单已送达，这里只补失败说明，不再重复长文本
+      await this.replyText(message, `图片生成失败：${describeError(error).split('\n')[0] ?? '未知错误'}`);
+      return 'fallback-sent';
     }
   }
 
-  private async buildFallbackText(error: unknown): Promise<string> {
-    let hint = '图片生成失败，请稍后重试。';
-    try {
-      const snapshot = await this.deps.market.getIndustrySnapshot();
-      const top = takeTopBlocks(snapshot.blocks, MAX_TOP_BLOCKS);
-      if (top.length > 0) {
-        const lines = top.slice(0, 10).map(
-          (block, index) =>
-            `${index + 1}. ${block.name} ${block.changePercent >= 0 ? '+' : ''}${block.changePercent.toFixed(2)}% ` +
-            `${formatTurnover(block.turnover)}`,
-        );
-        hint = [
-          '图片生成失败，先返回文字版行业板块成交额 TOP10：',
-          ...lines,
-          `数据源：${snapshot.source} · 行情时间：${formatQuoteTime(snapshot.quoteTime)}`,
-        ].join('\n');
-      }
-    } catch (fallbackError) {
-      this.logger.warn(`文字兜底取数同样失败：${describeError(fallbackError)}`);
-      hint = `图片生成失败，行情数据也不可用：${describeError(error).split('\n')[0] ?? '未知错误'}`;
-    }
-    return hint;
+  /** 取数失败时的错误说明（此时没有任何数据可发）。 */
+  private buildFetchFailureText(error: unknown): string {
+    const reason = describeError(error).split('\n')[0] ?? '未知错误';
+    return `行业板块数据获取失败，请稍后重试。\n原因：${reason}`;
   }
 
   /** 落盘调试图片，便于排查渲染问题；返回文件路径。 */

@@ -93,7 +93,7 @@ WebSocket 事件
   -> 解析 @机器人 指令
   -> 查询缓存或行情数据
   -> 按成交额降序取前 30 个行业
-  -> 先发 TOP30 文字榜单（msg_type=0，msg_seq=1）
+  -> 取数排序完成即发 TOP30 文字榜单（msg_type=0，msg_seq=1），不等图片
   -> 生成 A 股 Treemap 图片
   -> 群聊富媒体上传
   -> 再发图片（msg_type=7，msg_seq=2）
