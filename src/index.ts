@@ -18,7 +18,7 @@ import { MessageDeduplicator } from './qq/dedupe.js';
 import { GatewayClient, type GatewayEvent } from './qq/gateway.js';
 import { SessionStore } from './qq/session-store.js';
 import { TokenManager } from './qq/token.js';
-import { CLOSE_CODE_MEANING, type GroupAtMessageCreateData } from './qq/types.js';
+import { CLOSE_CODE_MEANING, extractMessageIndex, type GroupAtMessageCreateData } from './qq/types.js';
 import { join } from 'node:path';
 
 async function main(): Promise<void> {
@@ -126,9 +126,12 @@ async function main(): Promise<void> {
   }
 
   gateway.on('groupAtMessage', (data: GroupAtMessageCreateData) => {
+    // 引用回复：把用户那条消息的索引带上，图片会以引用形式挂在它下面
+    const messageReference = extractMessageIndex(data.message_scene);
     logger.info(
       `收到群 @ 消息：group=${data.group_openid} user=${data.author?.username ?? '未知'} ` +
-        `content="${(data.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}"`,
+        `content="${(data.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}"` +
+        (messageReference ? ` msg_idx=${messageReference.slice(0, 16)}…` : '（无 msg_idx，将不引用）'),
     );
     void handler
       .handle({
@@ -136,6 +139,7 @@ async function main(): Promise<void> {
         groupOpenid: data.group_openid,
         content: data.content,
         username: data.author?.username,
+        ...(messageReference ? { messageReference } : {}),
       })
       .then((outcome) => {
         logger.debug(`处理结果：${outcome}`);

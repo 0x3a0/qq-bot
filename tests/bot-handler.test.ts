@@ -114,6 +114,30 @@ afterEach(async () => {
 });
 
 describe('GroupMessageHandler', () => {
+  it('★ 带 messageReference 时，两张图都以引用形式发送', async () => {
+    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
+    const outcome = await handler.handle({
+      ...message,
+      messageReference: 'REFIDX_user_msg==',
+    });
+
+    expect(outcome).toBe('images-sent');
+    expect(calls.images).toHaveLength(2);
+    const refs = calls.images.map(
+      (call) => (call as unknown as { messageReference?: string }).messageReference,
+    );
+    expect(refs).toEqual(['REFIDX_user_msg==', 'REFIDX_user_msg==']);
+  });
+
+  it('不带 messageReference 时请求里不出现引用字段', async () => {
+    const { handler, calls } = createHarness({ imageOutputDir: tempDir });
+    await handler.handle(message);
+    const refs = calls.images.map(
+      (call) => (call as unknown as { messageReference?: string }).messageReference,
+    );
+    expect(refs.every((ref) => ref === undefined)).toBe(true);
+  });
+
   it('★ 大盘：发送两张图片（行业 + 概念），各用递增的 msg_seq', async () => {
     const { handler, calls } = createHarness({ imageOutputDir: tempDir });
     const outcome = await handler.handle(message);

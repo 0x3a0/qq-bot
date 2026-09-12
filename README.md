@@ -81,12 +81,22 @@ npm start        # 或 npm run dev（文件变更自动重启）
 | 群消息 | 机器人的回复 |
 |---|---|
 | `@机器人 ping` | `pong · 机器人在线 · 时间` 文本 |
-| `@机器人 大盘` | **两张图片**：行业板块 TOP25 + 概念板块 TOP25 主力净流入热力图（先渲染完的先发） |
+| `@机器人 大盘` | **两张图片**：行业板块 TOP25 + 概念板块 TOP25 主力净额热力图（先渲染完的先发，均为**引用回复**） |
 | `@机器人 帮助` | 指令说明 |
 | 其它内容 | 忽略（不回复） |
 
 > `大盘` **不再发送文字榜单**，数据全部通过图片呈现；
 > 只有在两张图都失败时，才发一条错误说明文字。
+
+### 关于「@ 发言人」
+
+群聊接口**不支持**机器人在消息里 @ 群成员 —— 发送群消息的请求体只有
+`msg_type / content / markdown / keyboard / msg_id / msg_seq / media / message_reference`，
+没有 `mentions` 之类的字段（[@ 是主消息的属性，而图片是另一条消息，无法跟随](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)）。
+
+替代方案：**引用回复**。事件体的 `message_scene.ext` 里有 `msg_idx`（即被引用消息 ID），
+把它填进请求的 `message_reference.message_id`，QQ 客户端就会把图片渲染成引用用户那条消息的卡片，
+视觉上紧挂在发言人下面，`@` 反而多余。
 
 ## 处理流程
 
@@ -95,6 +105,7 @@ Gateway WebSocket
   → GROUP_AT_MESSAGE_CREATE（@机器人）
   → 指令解析（大盘 / ping / 帮助）
   → 事件去重（msg_id）
+  → 取用户消息索引 msg_idx（message_scene.ext）
   → 并发两条链路（互不等待）：
        行业板块：取数(496) → 按 f62 降序取 TOP25 → 渲染 PNG → 分片上传 → msg_type=7 发送
        概念板块：取数(504) → 按 f62 降序取 TOP25 → 渲染 PNG → 分片上传 → msg_type=7 发送
@@ -102,12 +113,14 @@ Gateway WebSocket
 ```
 
 两条链路**并发且互不阻塞**：先渲染完的那张先发出去，用户不必等两张都好。
+两张图都带 `message_reference`，以引用用户消息的形式展示。
 
 兜底策略：
 
 - 两张图使用**递增的 `msg_seq`**（平台要求相同 `msg_id` 的不同回复必须换序号）
 - 单张失败 → 另一张照常发送，日志记录失败原因（结果记为 `partial`）
 - 两张都失败 → 发一条错误说明文字
+- 事件里没有 `msg_idx` 时自动降级为普通回复（不引用）
 - 数据失败的具体原因会带上板块类型（行业 / 概念）便于定位
 - `msg_seq` 用尽（平台上限 5 次）→ 停止回复并记录日志
 

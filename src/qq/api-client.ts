@@ -187,11 +187,16 @@ export class QqApiClient {
     content: string;
     msgId?: string;
     msgSeq?: number;
+    /** 引用回复：被引用消息 ID（来自事件的 message_scene.ext 里的 msg_idx） */
+    messageReference?: string;
   }): Promise<SendGroupMessageResult> {
     const body: Record<string, unknown> = { msg_type: 0, content: params.content };
     if (params.msgId) {
       body.msg_id = params.msgId;
       body.msg_seq = params.msgSeq ?? 1;
+    }
+    if (params.messageReference) {
+      body.message_reference = { message_id: params.messageReference };
     }
     const json = await this.request<unknown>({
       method: 'POST',
@@ -207,11 +212,16 @@ export class QqApiClient {
     fileInfo: string;
     msgId?: string;
     msgSeq?: number;
+    /** 引用回复：被引用消息 ID（来自事件的 message_scene.ext 里的 msg_idx） */
+    messageReference?: string;
   }): Promise<SendGroupMessageResult> {
     const body: Record<string, unknown> = { msg_type: 7, media: { file_info: params.fileInfo } };
     if (params.msgId) {
       body.msg_id = params.msgId;
       body.msg_seq = params.msgSeq ?? 1;
+    }
+    if (params.messageReference) {
+      body.message_reference = { message_id: params.messageReference };
     }
     const json = await this.request<unknown>({
       method: 'POST',

@@ -16,6 +16,24 @@ export interface QqMessageScene {
   ext?: string[];
 }
 
+/**
+ * 从事件体的 message_scene.ext 中取出消息索引 msg_idx。
+ *
+ * 引用回复（message_reference.message_id）需要这个值：
+ * 回复「非机器人发送的消息」时，被引用消息 ID 就来自事件里 msg_idx。
+ * 文档：https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html
+ */
+export function extractMessageIndex(scene: QqMessageScene | undefined): string | null {
+  const ext = scene?.ext;
+  if (!Array.isArray(ext)) return null;
+  for (const item of ext) {
+    if (typeof item !== 'string') continue;
+    const match = /^msg_idx=(.+)$/.exec(item.trim());
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 export interface QqMessageAttachment {
   url?: string;
   filename?: string;

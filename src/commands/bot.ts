@@ -56,6 +56,11 @@ export interface GroupMessage {
   content?: string;
   /** 发送者昵称，仅用于日志 */
   username?: string;
+  /**
+   * 被引用消息 ID（事件的 message_scene.ext 里的 msg_idx）。
+   * 填写后回复以「引用」形式挂在用户那条消息下，效果上接近「跟在发言人后面」。
+   */
+  messageReference?: string;
 }
 
 export interface MessageHandlingDeps {
@@ -159,6 +164,7 @@ export class GroupMessageHandler {
         content,
         msgId: message.messageId,
         msgSeq: seq,
+        ...(message.messageReference ? { messageReference: message.messageReference } : {}),
       }),
     );
 
@@ -307,6 +313,7 @@ export class GroupMessageHandler {
           fileInfo: uploaded.fileInfo,
           msgId: message.messageId,
           msgSeq: seq,
+          ...(message.messageReference ? { messageReference: message.messageReference } : {}),
         }),
       );
 
