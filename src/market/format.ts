@@ -51,10 +51,10 @@ export interface MarketSummaryOptions {
 }
 
 /**
- * 生成图片下方的数据说明文字，例如：
- * 东方财富 · 行业板块成交额 TOP20 · 行情时间 07-21 15:00
+ * 生成图片头部的数据说明文字，例如：
+ * 东方财富 · 行业板块成交额 TOP30 · 行情时间 15:00
  *
- * 当行情时间不是今天时（周末/节假日/休市），额外标注日期，
+ * 当行情时间不是今天时（周末/节假日/休市），在时间前带上完整日期（YYYY-MM-DD），
  * 避免把上一交易日的收盘数据误读成实时行情。
  */
 export function formatSnapshotSubtitle(
@@ -67,9 +67,8 @@ export function formatSnapshotSubtitle(
 
   let timeText = formatQuoteTime(time);
   if (params.quoteTime && isPreviousTradingDay(params.quoteTime, now)) {
-    // 带上年月日，明确这是历史（上一交易日）数据
     const shifted = new Date(params.quoteTime.getTime() + SHANGHAI_OFFSET_MS);
-    timeText = `${shifted.getUTCFullYear()}-${timeText}（非今日，上一交易日数据）`;
+    timeText = `${shifted.getUTCFullYear()}-${timeText}`;
   }
 
   return `${params.source} · 行业板块成交额 TOP${params.blockCount} · ${label} ${timeText}`;

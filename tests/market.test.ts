@@ -87,15 +87,15 @@ describe('normalizeDiff', () => {
 });
 
 describe('takeTopBlocks', () => {
-  it('最多返回 20 个板块', () => {
-    const rows = Array.from({ length: 30 }, (_, index) => row(`BK${index}`, `板块${index}`, 1, (30 - index) * 1e9));
+  it('最多返回 30 个板块', () => {
+    const rows = Array.from({ length: 40 }, (_, index) => row(`BK${index}`, `板块${index}`, 1, (40 - index) * 1e9));
     const blocks = normalizeIndustryRows(rows);
-    expect(blocks).toHaveLength(30);
-    expect(takeTopBlocks(blocks)).toHaveLength(20);
+    expect(blocks).toHaveLength(40);
+    expect(takeTopBlocks(blocks)).toHaveLength(30);
     expect(takeTopBlocks(blocks)[0]?.code).toBe('BK0');
   });
 
-  it('不足 20 个时返回全部', () => {
+  it('不足 30 个时返回全部', () => {
     const blocks = normalizeIndustryRows([row('BK1', 'A', 1, 1e9)]);
     expect(takeTopBlocks(blocks)).toHaveLength(1);
   });
@@ -121,7 +121,7 @@ describe('EastmoneyIndustryProvider', () => {
     expect(snapshot.blocks[0]?.name).toBe('超大板块');
     expect(snapshot.source).toBe('东方财富');
     expect(snapshot.market).toBe('A股');
-    expect(takeTopBlocks(snapshot.blocks)).toHaveLength(20);
+    expect(takeTopBlocks(snapshot.blocks)).toHaveLength(30);
   });
 
   it('请求参数符合接口约定', async () => {
@@ -242,28 +242,30 @@ describe('format 工具', () => {
     expect(formatQuoteTime(null)).toBe('时间未知');
   });
 
-  it('★ 非今日行情标注为上一交易日数据，避免误读成实时行情', () => {
+  it('★ 非今日行情在时间前带上完整日期，避免误读成实时行情', () => {
     // 周六 16:00（北京时间）查看周五收盘数据
     const saturday = new Date('2026-09-12T08:00:00Z'); // 北京 16:00
     const fridayQuote = new Date(1789112372 * 1000); // 北京 2026-09-11 15:39
     const subtitle = formatSnapshotSubtitle(
-      { source: '东方财富', quoteTime: fridayQuote, fetchedAt: saturday, blockCount: 20 },
+      { source: '东方财富', quoteTime: fridayQuote, fetchedAt: saturday, blockCount: 30 },
       { now: saturday },
     );
     expect(subtitle).toContain('2026-09-11 15:39');
-    expect(subtitle).toContain('上一交易日数据');
+    expect(subtitle).toContain('TOP30');
+    // 不再使用「（非今日，上一交易日数据）」这类后缀
+    expect(subtitle).not.toContain('上一交易日');
     expect(isPreviousTradingDay(fridayQuote, saturday)).toBe(true);
   });
 
-  it('当日行情不添加上一交易日标注', () => {
+  it('当日行情不添加日期前缀', () => {
     const now = new Date('2026-09-11T07:00:00Z'); // 北京 15:00
     const quote = new Date('2026-09-11T07:00:00Z');
     const subtitle = formatSnapshotSubtitle(
-      { source: '东方财富', quoteTime: quote, fetchedAt: now, blockCount: 20 },
+      { source: '东方财富', quoteTime: quote, fetchedAt: now, blockCount: 30 },
       { now },
     );
     expect(subtitle).toContain('行情时间 09-11 15:00');
-    expect(subtitle).not.toContain('上一交易日');
+    expect(subtitle).not.toContain('2026-');
     expect(isPreviousTradingDay(quote, now)).toBe(false);
   });
 

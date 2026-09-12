@@ -19,14 +19,30 @@ const baseOptions = {
 };
 
 describe('renderSvg', () => {
-  it('生成包含标题、数据源与行情时间的 SVG', () => {
+  it('生成包含数据源与行情时间的 SVG（不含大标题）', () => {
     const { svg, width, height } = renderSvg(baseOptions);
     expect(svg.startsWith('<?xml')).toBe(true);
-    expect(svg).toContain('A 股行业板块热力图');
     expect(svg).toContain('东方财富');
     expect(svg).toContain('行情时间');
+    // 大标题已移除
+    expect(svg).not.toContain('A 股行业板块热力图');
     expect(width).toBe(1200);
     expect(height).toBe(900);
+  });
+
+  it('非今日行情只带完整日期，不含「上一交易日数据」后缀', () => {
+    // 周六查看周五收盘数据
+    const saturday = new Date('2026-09-12T08:00:00Z');
+    const fridayQuote = new Date('2026-09-11T07:39:00Z');
+    const { svg } = renderSvg({
+      ...baseOptions,
+      quoteTime: fridayQuote,
+      blocks: blocks.map((block) => ({ ...block, quoteTimestamp: Math.floor(fridayQuote.getTime() / 1000) })),
+      now: saturday,
+    });
+    expect(svg).toContain('2026-09-1');
+    expect(svg).not.toContain('上一交易日');
+    expect(svg).not.toContain('非今日');
   });
 
   it('每个板块生成一个矩形', () => {
@@ -81,7 +97,7 @@ describe('renderPng', () => {
     expect(image.png.readUInt32BE(20)).toBe(600);
   });
 
-  it('空板块列表也能渲染（只有标题与页脚）', () => {
+  it('空板块列表也能渲染（只有头部与页脚）', () => {
     const image = renderPng({ ...baseOptions, blocks: [] });
     expect(image.tiles).toHaveLength(0);
     expect(image.png.length).toBeGreaterThan(1000);

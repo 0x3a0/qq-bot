@@ -17,7 +17,7 @@ import type { MarketBlock, MarketProvider, MarketSnapshot } from './types.js';
 export const EASTMONEY_SOURCE = '东方财富';
 export const EASTMONEY_CLIST_URL = 'https://push2delay.eastmoney.com/api/qt/clist/get';
 export const INDUSTRY_FS = 'm:90+t:2';
-export const MAX_TOP_BLOCKS = 20;
+export const MAX_TOP_BLOCKS = 30;
 
 const FIELDS = 'f12,f14,f3,f6,f124';
 

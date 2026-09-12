@@ -47,7 +47,7 @@ export function parseCommand(content: string | undefined): ParsedCommand | null 
 
 export const HELP_TEXT = [
   '可用指令：',
-  '· @机器人 大盘 —— 返回 A 股行业板块成交额 TOP20 热力图',
+  '· @机器人 大盘 —— 返回 A 股行业板块成交额 TOP30 热力图',
   '· @机器人 ping —— 连通性测试',
   '· @机器人 帮助 —— 显示本说明',
 ].join('\n');

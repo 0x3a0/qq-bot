@@ -18,8 +18,6 @@ export interface RenderImageOptions {
   source: string;
   quoteTime: Date | null;
   fetchedAt: Date;
-  /** 图片标题，默认「A 股行业板块热力图」 */
-  title?: string;
   width?: number;
   height?: number;
   fontFiles?: string[];
@@ -53,7 +51,8 @@ const THEME: Theme = {
   footerText: '#9aa4b8',
 };
 
-const HEADER_HEIGHT = 116;
+/** 头部只放一行数据说明（数据源 + 行情时间 + 涨跌家数），不再有标题。 */
+const HEADER_HEIGHT = 62;
 const FOOTER_HEIGHT = 56;
 const MARGIN = 20;
 const TILE_PADDING = 4;
@@ -72,7 +71,6 @@ const renderLogger = createLogger('render');
 export function renderSvg(options: RenderImageOptions): { svg: string; tiles: TreemapTile[]; width: number; height: number } {
   const width = options.width ?? DEFAULT_WIDTH;
   const height = options.height ?? DEFAULT_HEIGHT;
-  const title = options.title ?? 'A 股行业板块热力图';
 
   const chartWidth = width - MARGIN * 2;
   const chartHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT - MARGIN;
@@ -100,26 +98,18 @@ export function renderSvg(options: RenderImageOptions): { svg: string; tiles: Tr
   const stats = summarizeBlocks(options.blocks.slice(0, tiles.length));
   const tileMarkup = tiles.map((tile) => renderTile(tile)).join('\n');
   const legend = renderLegend({ x: MARGIN, y: height - FOOTER_HEIGHT + 14, width: LEGEND_WIDTH });
+  const statsText = `上涨 ${stats.up} · 下跌 ${stats.down}${stats.flat > 0 ? ` · 平盘 ${stats.flat}` : ''}`;
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <defs>
-    <linearGradient id="headerBg" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1b2030"/>
-      <stop offset="100%" stop-color="#232b40"/>
-    </linearGradient>
-  </defs>
   <rect x="0" y="0" width="${width}" height="${height}" fill="${THEME.background}"/>
-  <rect x="0" y="0" width="${width}" height="${HEADER_HEIGHT}" fill="url(#headerBg)"/>
-  <text x="${MARGIN}" y="52" font-family="sans-serif" font-size="34" font-weight="700" fill="${THEME.headerText}">${escapeXml(
-    title,
-  )}</text>
-  <text x="${MARGIN}" y="88" font-family="sans-serif" font-size="19" fill="${THEME.headerSubText}">${escapeXml(
-    subtitle,
-  )}</text>
-  <text x="${width - MARGIN}" y="52" text-anchor="end" font-family="sans-serif" font-size="20" fill="${THEME.headerSubText}">${escapeXml(
-    `上涨 ${stats.up} · 下跌 ${stats.down}${stats.flat > 0 ? ` · 平盘 ${stats.flat}` : ''}`,
-  )}</text>
+  <rect x="0" y="0" width="${width}" height="${HEADER_HEIGHT}" fill="${THEME.headerBackground}"/>
+  <text x="${MARGIN}" y="${HEADER_HEIGHT / 2 + 7}" font-family="sans-serif" font-size="20" fill="${
+    THEME.headerText
+  }">${escapeXml(subtitle)}</text>
+  <text x="${width - MARGIN}" y="${HEADER_HEIGHT / 2 + 6}" text-anchor="end" font-family="sans-serif" font-size="19" fill="${
+    THEME.headerSubText
+  }">${escapeXml(statsText)}</text>
   <g transform="translate(${MARGIN}, ${HEADER_HEIGHT})">
 ${tileMarkup}
   </g>
@@ -256,7 +246,7 @@ function imageCacheKey(options: RenderImageOptions, width: number, height: numbe
     .map((block) => `${block.code}:${block.name}:${block.changePercent}:${block.turnover}`)
     .join('|');
   const quote = options.quoteTime?.getTime() ?? 'none';
-  return `${width}x${height}|${options.title ?? ''}|${options.source}|${quote}|${blocks}`;
+  return `${width}x${height}|${options.source}|${quote}|${blocks}`;
 }
 
 /** 运行时关闭 PNG 缓存后可测量真实渲染耗时（自检脚本用）。 */

@@ -13,11 +13,11 @@ logger.debug = () => {};
 logger.info = () => {};
 logger.warn = () => {};
 
-const blocks: MarketBlock[] = Array.from({ length: 25 }, (_, index) => ({
+const blocks: MarketBlock[] = Array.from({ length: 35 }, (_, index) => ({
   code: `BK${index}`,
   name: `板块${index}`,
   changePercent: index % 2 === 0 ? 1.5 : -1.2,
-  turnover: (25 - index) * 1e9,
+  turnover: (35 - index) * 1e9,
   quoteTimestamp: 1_752_000_000,
 }));
 
@@ -118,7 +118,7 @@ describe('GroupMessageHandler', () => {
     expect(uploadCall.fileName).toMatch(/\.png$/);
   });
 
-  it('渲染时只取成交额前 20 个板块', async () => {
+  it('渲染时只取成交额前 30 个板块', async () => {
     const renderer = vi.fn((_options: unknown) => ({
       png: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       svg: '<svg/>',
@@ -132,7 +132,7 @@ describe('GroupMessageHandler', () => {
     });
     await handler.handle(message);
     const options = renderer.mock.calls[0]?.[0] as unknown as { blocks: MarketBlock[]; source: string };
-    expect(options.blocks).toHaveLength(20);
+    expect(options.blocks).toHaveLength(30);
     expect(options.source).toBe('东方财富');
   });
 
