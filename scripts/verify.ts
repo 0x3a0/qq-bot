@@ -19,6 +19,14 @@ import { loadDotEnv } from '../src/env.js';
 import { createLogger, describeError, setLogLevel } from '../src/logger.js';
 import { EastmoneyIndustryProvider, MAX_TOP_BLOCKS, takeTopBlocks } from '../src/market/eastmoney.js';
 import { formatChangePercent, formatQuoteTime, formatTurnover, summarizeBlocks } from '../src/market/format.js';
+import { EastmoneyFundFlowProvider } from '../src/market/fundflow.js';
+import {
+  FUND_FLOW_PERIOD_LABEL,
+  SECTOR_KIND_LABEL,
+  takeTopByMainNet,
+  type FundFlowPeriod,
+  type SectorKind,
+} from '../src/market/fundflow-types.js';
 import { QqApiClient, MD5_10M_BYTES, md5 } from '../src/qq/api-client.js';
 import { GatewayClient } from '../src/qq/gateway.js';
 import { SessionStore } from '../src/qq/session-store.js';
@@ -26,13 +34,14 @@ import { TokenManager } from '../src/qq/token.js';
 import { CLOSE_CODE_MEANING, type GroupAtMessageCreateData } from '../src/qq/types.js';
 import { renderPng } from '../src/render/image.js';
 
-type SubCommand = 'all' | 'market' | 'render' | 'qq' | 'inbound' | 'upload';
+type SubCommand = 'all' | 'market' | 'fundflow' | 'render' | 'qq' | 'inbound' | 'upload';
 
 const USAGE = [
   '用法：npm run verify -- <子命令> [参数]',
   '',
-  '  all               依次执行 market + render + qq（默认）',
+  '  all               依次执行 market + fundflow + render + qq（默认）',
   '  market            行情取数与成交额排序自检',
+  '  fundflow [周期]   行业 / 概念板块资金流自检（周期 today|5d|10d，默认 today）',
   '  render            渲染一张真实数据的 PNG',
   '  qq                校验 Access Token 与 Gateway 接入点',
   '  inbound [秒数]    监听群 @ 事件（默认 300 秒），可加 --reset 清理会话缓存',
@@ -78,6 +87,117 @@ async function runMarket(): Promise<void> {
   console.log(`\n按成交额降序：${sorted ? '通过' : '失败'}`);
   console.log(`涨跌统计：上涨 ${stats.up} / 下跌 ${stats.down} / 平盘 ${stats.flat}`);
   if (!sorted) process.exitCode = 1;
+}
+
+// ---------------------------------------------------------------------------
+// fundflow：行业 / 概念板块资金流
+// ---------------------------------------------------------------------------
+const FUND_FLOW_TOP = 10;
+
+/** 把「元」格式化成带符号的「亿元」。 */
+function formatYi(yuan: number): string {
+  const yi = yuan / 1e8;
+  const sign = yi > 0 ? '+' : '';
+  return `${sign}${yi.toFixed(2)}亿`;
+}
+
+async function runFundFlow(args: string[]): Promise<void> {
+  const period = (args[0] ?? 'today') as FundFlowPeriod;
+  if (!(period in FUND_FLOW_PERIOD_LABEL)) {
+    console.error(`未知周期：${args[0]}（可选 today | 5d | 10d）`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const logger = createLogger('verify:fundflow');
+  const provider = new EastmoneyFundFlowProvider({ logger, cacheTtlMs: 0 });
+
+  console.log(`\n统计周期：${FUND_FLOW_PERIOD_LABEL[period]}（fid=${period === 'today' ? 'f62' : period === '5d' ? 'f164' : 'f174'}）`);
+
+  let failures = 0;
+
+  for (const kind of ['industry', 'concept'] as SectorKind[]) {
+    const started = Date.now();
+    let snapshot;
+    try {
+      snapshot = await provider.getSectorFundFlow(kind, period);
+    } catch (error) {
+      failures += 1;
+      console.error(`\n❌ ${SECTOR_KIND_LABEL[kind]} 资金流获取失败：${describeError(error)}`);
+      continue;
+    }
+
+    const top = takeTopByMainNet(snapshot.sectors, FUND_FLOW_TOP);
+    const elapsed = Date.now() - started;
+
+    console.log(`\n${'='.repeat(74)}`);
+    console.log(`${SECTOR_KIND_LABEL[kind]} · ${FUND_FLOW_PERIOD_LABEL[period]}主力净流入 TOP${FUND_FLOW_TOP}`);
+    console.log(`来源：${snapshot.source}  板块总数：${snapshot.sectors.length}  行情时间：${formatQuoteTime(snapshot.quoteTime)}  耗时：${elapsed}ms`);
+    console.log(`${'='.repeat(74)}`);
+    console.log('  #  板块                 涨跌幅     主力净额      占比     超大单       大单');
+    for (const [index, sector] of top.entries()) {
+      console.log(
+        `${String(index + 1).padStart(3)}. ${sector.name.padEnd(12, '　')} ` +
+          `${formatChangePercent(sector.changePercent).padStart(8)} ` +
+          `${formatYi(sector.mainNet).padStart(12)} ` +
+          `${`${sector.mainNetRatio.toFixed(2)}%`.padStart(8)} ` +
+          `${formatYi(sector.superNet).padStart(12)} ${formatYi(sector.bigNet).padStart(12)}`,
+      );
+    }
+
+    // 校验 1：主力净额 = 超大单 + 大单（接口口径）
+    const consistent = snapshot.sectors.filter((sector) =>
+      Math.abs(sector.mainNet - (sector.superNet + sector.bigNet)) < 1,
+    ).length;
+    const driftOk = consistent === snapshot.sectors.length;
+
+    // 校验 2：排序确为降序
+    const sortedOk = snapshot.sectors.every(
+      (sector, index) => index === 0 || (snapshot.sectors[index - 1]?.mainNet ?? 0) >= sector.mainNet,
+    );
+
+    // 校验 3：资金守恒（主力 + 中单 + 小单 ≈ 0，误差来自服务端四舍五入）
+    const conserved = snapshot.sectors.filter(
+      (sector) => Math.abs(sector.mainNet + sector.midNet + sector.smallNet) <= Math.max(2, Math.abs(sector.mainNet) * 0.001),
+    ).length;
+
+    // 校验 4：净流入 / 净流出都应有数据（全为同号说明字段取错）
+    const inflow = snapshot.sectors.filter((sector) => sector.mainNet > 0).length;
+    const outflow = snapshot.sectors.filter((sector) => sector.mainNet < 0).length;
+
+    console.log(`\n校验：`);
+    console.log(`  ${driftOk ? '✅' : '❌'} 主力净额 = 超大单 + 大单：${consistent}/${snapshot.sectors.length}`);
+    console.log(`  ${sortedOk ? '✅' : '❌'} 按主力净额降序返回：${sortedOk ? '通过' : '失败'}`);
+    console.log(`  ℹ️ 资金守恒（主力+中单+小单≈0）：${conserved}/${snapshot.sectors.length}`);
+    console.log(`  ℹ️ 净流入 ${inflow} 个 / 净流出 ${outflow} 个`);
+    if (!driftOk || !sortedOk) failures += 1;
+  }
+
+  // 明细接口自检：取当前行业第一名的分钟级资金流
+  try {
+    const industry = await provider.getSectorFundFlow('industry', period);
+    const leader = takeTopByMainNet(industry.sectors, 1)[0];
+    if (leader) {
+      const detail = await provider.getSectorFundFlowDetail(leader.code);
+      const last = detail.points.at(-1);
+      console.log(`\n明细接口：${detail.code} ${detail.name} 分钟级点位 ${detail.points.length} 个`);
+      console.log(
+        `  最新点位 ${last?.time ?? '-'}：主力 ${formatYi(last?.mainNet ?? 0)}` +
+          ` / 超大单 ${formatYi(last?.superNet ?? 0)} / 大单 ${formatYi(last?.bigNet ?? 0)}`,
+      );
+      const detailOk =
+        detail.points.length > 0 &&
+        (last ? Math.abs(last.mainNet - (last.superNet + last.bigNet)) < 1 : false);
+      console.log(`  ${detailOk ? '✅' : '❌'} 分钟级明细主力净额与超大单+大单一致`);
+      if (!detailOk) failures += 1;
+    }
+  } catch (error) {
+    failures += 1;
+    console.error(`\n❌ 明细分接口自检失败：${describeError(error)}`);
+  }
+
+  console.log(`\n资金流自检结果：${failures === 0 ? '全部通过' : `${failures} 项失败`}`);
+  if (failures > 0) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,11 +477,15 @@ async function main(): Promise<void> {
   switch (command) {
     case 'all':
       await runMarket();
+      await runFundFlow([]);
       await runRender();
       await runQq();
       return;
     case 'market':
       await runMarket();
+      return;
+    case 'fundflow':
+      await runFundFlow(args);
       return;
     case 'render':
       await runRender();
