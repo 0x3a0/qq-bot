@@ -33,7 +33,7 @@ async function main(): Promise<void> {
 
   // 单实例保护：两个进程连同一机器人时，平台会把同一条群消息投递给两个连接，
   // 于是每个指令被回复两遍。这里在连接前直接拒绝启动。
-  // 容器环境（Railway 等）跨部署 pid 会重复，锁按「运行环境 + pid」双重判定。
+  // 容器里 pid 会跨部署重复，锁按「运行环境标识 + pid」双重判定。
   const lockPath = join(process.cwd(), '.tmp-probe', 'bot.lock');
   const lock = acquireLock({ filePath: lockPath, logger, enabled: config.instanceLock });
   if (!lock.ok) {

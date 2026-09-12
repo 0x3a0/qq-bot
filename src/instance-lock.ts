@@ -5,7 +5,8 @@
  * 投递给两个连接，于是每个指令被回复两遍（用户看到"重复的一张图/两条消息"）。
  * 这里用锁文件 + 存活探测在启动阶段拦掉这种误操作。
  *
- * 注意：仅用于本地单机；Railway 等平台容器内 pid 不跨实例，不会误判。
+ * 适用范围：同一文件系统（本地机器、同一容器）。跨容器实例（例如平台做滚动部署）
+ * 看不到彼此的锁文件，这种情况要靠平台侧把实例数设为 1 并关闭零停机部署。
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -28,17 +29,21 @@ export type AcquireResult =
 
 /**
  * 当前进程所属的「运行环境」标识。
- * - 本地：主机名 + 系统启动时间的近似值（每次开机不同）
- * - 容器（Railway 等）：平台注入的变量，跨部署会变化
+ *
+ * 优先使用调用方显式提供的标识（容器平台可把「部署 ID / 实例 ID」之类注入进来），
+ * 否则回退为「主机名 + 系统启动时刻的近似值」——同一台机器重启后必然不同，
+ * 因此上一次运行的残留锁不会被误判成本次。
  * 只用于判断锁是否属于当前这次运行环境，不参与安全决策。
  */
-export function currentEnvKey(env: NodeJS.ProcessEnv = process.env, uptimeSec = os.uptime()): string {
-  const platform = env.RAILWAY_ENVIRONMENT_NAME ?? env.RAILWAY_ENVIRONMENT_ID ?? env.RAILWAY_PROJECT_ID;
+export function currentEnvKey(
+  env: NodeJS.ProcessEnv = process.env,
+  uptimeSec = os.uptime(),
+  explicitKey = env.INSTANCE_ENV_KEY,
+): string {
   const host = os.hostname();
-  if (platform) return `railway:${platform}:${host}`;
-  // 本地：用「当前时间 - uptime」近似系统启动时刻，重启后必然不同
+  if (explicitKey && explicitKey.trim().length > 0) return `${explicitKey.trim()}:${host}`;
   const bootApprox = Math.round(Date.now() / 1000 - uptimeSec);
-  return `local:${host}:${bootApprox}`;
+  return `${host}:${bootApprox}`;
 }
 
 /** 判断进程是否存活（signal 0 只做权限/存在性检查）。 */

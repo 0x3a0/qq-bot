@@ -2,7 +2,7 @@
  * 加载项目根目录下的 .env（如果存在）。
  *
  * 设计要点：不覆盖进程里已经存在的环境变量，这样 `APP_ID=xxx npm start`
- * 或 Railway / CI 注入的变量优先级始终高于本地文件。
+ * 或部署平台 / CI 注入的变量优先级始终高于本地文件。
  * 使用 Node 内置的 loadEnvFile（Node 20.12+ / 21.7+），不引入 dotenv 依赖。
  */
 import { existsSync } from 'node:fs';

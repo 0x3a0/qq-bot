@@ -299,48 +299,53 @@ npm run check       # 类型检查 + 测试
 
 ## 部署到 Render
 
-**可以运行，但 Render 的服务模型与 Railway 不同**，需要额外注意三件事。
-仓库里已提供 `render.yaml` 蓝图，Dashboard → New → Blueprint → 选本仓库即可。
+仓库里已提供 `render.yaml` 蓝图：Dashboard → New → **Blueprint** → 选本仓库即可。
+部署前需要了解 Render 的三条约束，程序已针对前两条做了适配。
 
-### 与 Railway 的关键差异
+### 1. Web Service 必须绑定 `PORT`
 
-| 项 | Railway | Render |
-|---|---|---|
-| 是否必须监听端口 | 否（不监听就不给域名） | **Web Service 必须绑定 `PORT`**，否则判定部署失败；Background Worker 不需要端口但仅付费 |
-| 免费实例 | 有额度限制 | 有免费实例，但**15 分钟无流量/无 WebSocket 消息会休眠** |
-| 部署切换 | 停旧起新 | 默认**零停机**：先起新实例，60 秒后才停旧实例 ⚠️ |
+Render 的 Web Service 如果没在限期内监听 `PORT`，会被判定部署失败。
+但本服务业务上只**主动连出** QQ Gateway，并不需要端口。
 
-程序已适配：**只有平台注入 `PORT` 时才监听**，且只暴露一个 `/health`
-（就绪状态跟着 Gateway 走，未连上返回 503）。本地运行不注入 `PORT`，因此不会开监听。
+程序的做法：**只有平台注入 `PORT` 时才监听**，且只暴露一个 `/health`
+（就绪状态跟着 Gateway 走，未连上返回 503）。本地不注入 `PORT`，所以不开监听。
 
-### 部署步骤
+若用付费的 Background Worker（本就更贴合这种常驻任务），
+删掉 `healthCheckPath` 与 `PORT` 即可——检测不到 `PORT` 就不会开监听。
 
-1. Render → New → **Blueprint** → 选择本仓库（会读取 `render.yaml`）
-2. 在控制台填 `APP_ID`、`CLIENT_SECRET`（蓝图里标了 `sync: false`，不会进仓库）
-3. ⚠️ **关闭 Zero-Downtime Deploy**（Settings → Deploy）
-   Render 默认先起新实例、60 秒后才停旧实例。这两个实例会**同时连着 QQ Gateway**，
-   于是同一条群消息被回复两次——就是我们之前踩过的那个坑换了个形式。
-   关掉它之后是「停旧起新」，中间有几十秒不可用，但不会重复回复。
-4. 确认 **实例数为 1**（`numInstances: 1`）。本项目用 WebSocket 长连接、
-   去重状态在进程内存里，不能水平扩容。
-5. 把 `healthCheckPath` 设为 `/health`（蓝图已配置）。若用付费的 Background Worker，
-   删掉 `healthCheckPath` 与 `PORT` 即可——程序检测不到 `PORT` 就不开监听。
+### 2. ⚠️ 必须关闭 Zero-Downtime Deploy
 
-### 免费实例的休眠问题（重要）
+Render 默认的部署流程是「先起新实例 → 切换流量 → **60 秒后**才停旧实例」。
+这 60 秒内两个实例**同时连着 QQ Gateway**，平台会把同一条群消息投递给两个连接，
+于是每个指令被回复两遍。
+
+这个开关在 **Settings → Deploy** 里手动关闭（Blueprint 无法配置）。
+关掉后是「停旧起新」，会有几十秒不可用，但不会重复回复。
+
+同时确认**实例数为 1**（蓝图里 `numInstances: 1`）。本项目用 WebSocket 长连接、
+去重状态在进程内存里，不能水平扩容。
+
+### 3. 免费实例 15 分钟会休眠
 
 Render 免费 Web 实例在 **15 分钟**内既没有 HTTP 请求、也没有收到 WebSocket 消息时
 会休眠（[2026-02 更新](https://render.com/changelog/free-web-services-now-remain-active-while-receiving-websocket-messages)：
 现在收到 WebSocket 消息也会续命）。对本服务的实际影响：
 
-- QQ Gateway 由**我们主动连出**，其下行流量属于 WebSocket 消息，能续命；
+- QQ Gateway 由我们主动连出，其下行流量属于 WebSocket 消息，能续命；
 - 但群里如果**连续 15 分钟没人 @ 机器人**，就没有下行消息，实例会被休眠，
-  此时机器人**收不到任何消息**（直到下次唤醒，而唤醒通常需要外部 HTTP 请求）；
-- 因此免费实例**不适合真正当服务用**。要稳定运行请用付费实例，
-  或改用 Background Worker（无休眠，但需付费）。
+  此时机器人收不到任何消息；
+- 因此免费实例**不适合真正当服务用**。要稳定运行请用付费实例或 Background Worker。
+
+### 部署步骤
+
+1. Render → New → Blueprint → 选择本仓库（读取 `render.yaml`）
+2. 在控制台填 `APP_ID`、`CLIENT_SECRET`（蓝图里标了 `sync: false`，不会进仓库）
+3. Settings → Deploy → **关闭 Zero-Downtime Deploy**
+4. 确认实例数为 1、`healthCheckPath` 为 `/health`（蓝图已配好）
 
 ### 部署后验证
 
-日志应出现（与 Railway 相同）：
+日志应出现：
 
 ```text
 [INFO] [app] 未找到 .env，使用进程内环境变量
@@ -351,8 +356,10 @@ Render 免费 Web 实例在 **15 分钟**内既没有 HTTP 请求、也没有收
 
 再访问 `https://<你的服务>.onrender.com/health`，应返回 `ok`（Gateway 未就绪时返回 503）。
 
-**中文字体**：Render 的原生 Node 运行时不保证带 CJK 字体。启动日志若出现
-「字体检查未通过」，就 SSH 进去找字体并填 `FONT_FILES`：
+### 中文字体
+
+Render 的原生 Node 运行时不保证带 CJK 字体。**缺少时 resvg 不会报错，只会画不出文字**
+（图片变成只有色块），因此启动时会做字体探针并明确告警。处理方式：
 
 ```bash
 # Render Dashboard → Shell
@@ -360,104 +367,13 @@ fc-list :lang=zh | head        # 有输出说明系统已有中文字体
 find / -name "*NotoSansCJK*" 2>/dev/null | head
 ```
 
-> 若系统完全没有中文字体，最省事的办法是在仓库里放一个 CJK 字体文件
-> （如 `fonts/NotoSansSC-Regular.otf`）并设 `FONT_FILES=fonts/NotoSansSC-Regular.otf`，
-> 随代码一起部署。
-
-## 部署到 Railway
-
-**不能只 add 仓库就跑起来**，还需要在 Railway 上补几项配置。仓库里已经准备好了
-构建相关文件（`nixpacks.toml`、`.node-version`、`tsconfig.build.json`），你要做的是下面 4 步。
-
-### 1. 新建 Service 并关联 GitHub 仓库
-
-Railway → New Project → Deploy from GitHub repo → 选择本仓库。
-Nixpacks 会自动识别 Node 项目，按 `nixpacks.toml` 执行：
-
-```text
-setup    : nodejs_22 + noto-fonts-cjk-sans + fontconfig
-install  : npm ci
-build    : npm run build      # tsc -p tsconfig.build.json → dist/
-start    : node dist/index.js
-```
-
-### 2. 配置 Variables（必填，否则启动即失败）
-
-| 变量 | 值 | 说明 |
-|---|---|---|
-| `APP_ID` | 你的 AppID | **必填**。`.env` 不会被提交，容器里只能靠这个 |
-| `CLIENT_SECRET` | 你的 AppSecret | **必填** |
-| `QQ_ENV` | `production` | 沙箱机器人填 `sandbox` |
-| `DEBUG_IMAGES` | `false` | 不往容器磁盘写调试图（容器文件系统是临时的，写它没意义） |
-| `FONT_FILES` | 见第 4 步 | 留空则走系统字体 |
-
-`.env` 里其余变量都有默认值，按需覆盖即可（`LOG_LEVEL`、`MARKET_CACHE_TTL_MS` 等）。
-
-> 敏感信息只放 Variables，不要提交到仓库。`.gitignore` 已忽略 `.env`。
-
-### 3. 副本数必须是 1
-
-本项目用 **WebSocket 长连接**接收事件，且去重状态在进程内存里，
-**不能水平扩容**：两个副本会各自连一个 Gateway 连接，同一条群消息被回复两次。
-所以：
-
-- 保持默认的 **1 个 replica**，不要开多副本
-- 部署切换时 Railway 会先停旧容器再起新容器；程序已处理 `SIGTERM` 优雅退出
-- 若日志出现 `已有另一个机器人在运行（pid=…）`，说明确实起了两个进程，
-  先确认副本数。容器里 pid 会跨部署重复，锁已按「运行环境 + pid」双重判定，
-  不会把上一次部署的锁误判成活的
-
-### 4. 中文字体（最容易踩的坑）
-
-resvg 在找不到字体时**不会报错**，只是不画文字——图片会变成一张只有色块、
-一个字都没有的图（同一张图实测：有字体 105KB / 无字体 19KB）。
-`nixpacks.toml` 已安装 `noto-fonts-cjk-sans`，正常情况下无需额外配置。
-
-程序启动时会用「单个汉字」渲染一张探针图来判断字体是否真的可用，并明确告警：
-
-```text
-[INFO] 字体检查通过（探针 2865B），使用系统字体
-# 或者
-[ERROR] ⚠️ 字体检查未通过（探针仅 454B）：当前环境缺少中文字体……
-```
-
-如果告警说缺字体，直接在容器里找字体路径填进 `FONT_FILES`：
+若系统完全没有中文字体，最可靠的办法是**把字体文件放进仓库**随代码部署：
 
 ```bash
-railway run bash          # 或 railway ssh
-find /nix/store -name "*NotoSansCJK*" 2>/dev/null | head
-# 把找到的 .ttc/.otf 路径填进 Variables：FONT_FILES=/nix/store/.../NotoSansCJK-Regular.ttc
+# 例如放一份思源黑体子集
+fonts/NotoSansSC-Regular.otf
+# 然后设 Variables：FONT_FILES=fonts/NotoSansSC-Regular.otf
 ```
-
-> 注意：`FONT_FILES` 指向不存在的文件时 resvg 会**静默回退到系统字体**，
-> 本地（有系统字体）看不出问题；探针会额外校验这些文件是否存在。
-
-### 5. 关于端口与健康检查
-
-本服务只**主动连出** QQ Gateway，不监听任何端口，因此：
-
-- 不需要也不应该配 `PORT` / 公网域名（Networking 里保持无域名即可）
-- Railway 若对「无端口」服务判定为异常，把健康检查/重启策略设为
-  `Restart on Failure`，不要用 HTTP 健康检查
-
-### 6. 部署后验证
-
-看部署日志，正常应看到：
-
-```text
-[INFO] [app] QQ Bot MVP 启动中（env=production，apiBase=https://api.bot.qq.com）
-[INFO] [app] 未找到 .env，使用进程内环境变量      ← 容器里正常
-[INFO] [app] 字体检查通过（探针 …B），使用系统字体
-[INFO] [app:gateway] Gateway 鉴权成功 READY，session_id=…，机器人=…
-[INFO] [app] 现在可以在测试群里 @机器人 发送「大盘」或「ping」
-```
-
-然后在群里发一次 `@机器人 大盘`，应收到两张引用回复的图片。
-若收到空白图（有色块无文字），回到第 4 步。
-
-> 关于费用与休眠：该服务需要**常驻**运行（Gateway 长连接），
-> 请留意 Railway 当前套餐的运行时长/休眠规则，免费额度不足以长期常驻时会被停机，
-> 停机期间机器人收不到任何消息。
 
 ## 常见问题
 

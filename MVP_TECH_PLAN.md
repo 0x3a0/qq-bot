@@ -218,32 +218,39 @@ WebSocket 事件
 - `msg_id + msg_seq` 去重
 - 资金流短时缓存和失败兜底
 
-## 6. 部署方案：Railway + WebSocket
+## 6. 部署方案：Render + WebSocket
 
-使用 Railway 部署一个常驻 Node.js 服务，程序启动后主动连接 QQ Gateway。
+部署一个常驻 Node.js 服务，程序启动后主动连接 QQ Gateway。
 
 ```text
-Railway Node.js 服务
+Render 服务（Web Service 或 Background Worker）
   -> QQ Gateway WebSocket：接收事件、心跳、重连
   -> QQ HTTP API：获取 Token、上传图片、发送群消息
 ```
 
-Railway 配置要点：
+部署配置要点：
 
-- 使用常驻 Service，不使用一次性任务。
-- 将 `APP_ID`、`CLIENT_SECRET` 等敏感配置放入 Railway Variables（`.env` 不提交仓库）。
-- 构建：`nixpacks.toml` 指定 Node 22 + 中文字体，`npm run build` 产出 `dist/`，
+- 使用常驻服务，不使用一次性任务 / Cron Job。
+- 仓库提供 `render.yaml` 蓝图，Blueprint 部署时自动识别。
+- 将 `APP_ID`、`CLIENT_SECRET` 放入控制台的 Environment Variables
+  （`.env` 不提交仓库，蓝图里标记 `sync: false`）。
+- 构建：`npm run build`（`tsconfig.build.json`）产出 `dist/`，
   启动命令 `node dist/index.js`（运行时不依赖 tsx）。
-- **副本数必须为 1**：WebSocket 长连接 + 进程内去重，多副本会让同一条群消息被回复多次。
-- **服务不监听端口**，只主动连出，因此不需要公网域名，也不要用 HTTP 健康检查。
-- **必须确保容器内有中文字体**：resvg 缺字体时静默不画文字（图只剩色块），
-  启动时的字体探针会明确告警。
-- 程序必须持续运行，并处理平台重启和部署重启（已处理 SIGTERM）。
+- **实例数必须为 1**：WebSocket 长连接 + 进程内去重，多实例会让同一条群消息被回复多次。
+- **必须关闭 Zero-Downtime Deploy**：否则新实例起来后旧实例还会存活约 60 秒，
+  两个实例同时连着 Gateway，同一条消息被回复两次。
+- **Web Service 必须绑定 `PORT`**：程序仅在检测到 `PORT` 时监听一个 `/health`
+  （就绪状态跟随 Gateway），本地运行不开监听。若用 Background Worker
+  （更贴合常驻任务，但仅付费实例）则无需端口。
+- **免费实例 15 分钟无流量会休眠**，群内长时间无人 @ 机器人时收不到消息；
+  要稳定常驻需付费实例或 Background Worker。
+- **必须确保运行环境有中文字体**：resvg 缺字体时静默不画文字（图只剩色块），
+  启动时的字体探针会明确告警；可靠做法是把字体文件放进仓库并设 `FONT_FILES`。
+- 程序处理平台重启与部署重启（已处理 SIGTERM 优雅退出）。
 - 记录 Gateway 连接、心跳、重连和消息发送日志。
-- 不依赖本地磁盘保存重要数据；MVP 的短期缓存和去重状态可先放在进程内。
-- 关注 Railway 当前套餐的运行时长、休眠和费用规则（常驻服务会持续计费）。
+- 不依赖本地磁盘保存重要数据；MVP 的短期缓存和去重状态放在进程内。
 
-完整步骤与排查见 [README](./README.md#部署到-railway)。
+完整步骤与排查见 [README](./README.md#部署到-render)。
 
 本 MVP 暂不实现 Webhook，也不部署到 Vercel。后续如需要 Serverless 再单独设计 Webhook + 队列架构。
 

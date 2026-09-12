@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { acquireLock, currentEnvKey, isProcessAlive, readLock, releaseLock } from '../src/instance-lock.js';
 import { createLogger } from '../src/logger.js';
@@ -53,13 +54,13 @@ describe('单实例保护', () => {
     const stalePath = join(dir, 'deploy-old.lock');
     writeFileSync(
       stalePath,
-      JSON.stringify({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', envKey: 'railway:old-deploy:host-1' }),
+      JSON.stringify({ pid: process.pid, startedAt: '2026-01-01T00:00:00Z', envKey: 'deploy-old:host-1' }),
       'utf8',
     );
 
-    const result = acquire(stalePath, 'railway:new-deploy:host-2');
+    const result = acquire(stalePath, 'deploy-new:host-2');
     expect(result.ok).toBe(true);
-    expect(readLock(stalePath)?.envKey).toBe('railway:new-deploy:host-2');
+    expect(readLock(stalePath)?.envKey).toBe('deploy-new:host-2');
   });
 
   it('残留锁（同环境但进程已不存在）会被覆盖', () => {
@@ -103,19 +104,27 @@ describe('单实例保护', () => {
 });
 
 describe('currentEnvKey', () => {
-  it('★ 本地环境标识包含主机名与系统启动时刻', () => {
+  it('★ 默认用主机名 + 系统启动时刻标识本次运行（重启后必然不同）', () => {
     const key = currentEnvKey({}, 1234);
-    expect(key.startsWith('local:')).toBe(true);
+    expect(key).toContain(os.hostname());
     expect(key).toContain(`:${Math.round(Date.now() / 1000 - 1234)}`);
   });
 
-  it('★ Railway 环境标识包含平台环境名与主机名', () => {
-    const key = currentEnvKey({ RAILWAY_ENVIRONMENT_NAME: 'production' } as NodeJS.ProcessEnv, 0);
-    expect(key.startsWith('railway:production:')).toBe(true);
+  it('★ 平台注入 INSTANCE_ENV_KEY 时用它标识（部署 ID / 实例 ID）', () => {
+    const key = currentEnvKey({ INSTANCE_ENV_KEY: 'deploy-abc123' } as NodeJS.ProcessEnv, 0);
+    expect(key.startsWith('deploy-abc123:')).toBe(true);
   });
 
-  it('没有 RAILWAY_ENVIRONMENT_NAME 时回退到其它注入变量', () => {
-    const key = currentEnvKey({ RAILWAY_PROJECT_ID: 'proj-1' } as NodeJS.ProcessEnv, 0);
-    expect(key.startsWith('railway:proj-1:')).toBe(true);
+  it('INSTANCE_ENV_KEY 为空串时回退到主机名+启动时刻', () => {
+    const key = currentEnvKey({ INSTANCE_ENV_KEY: '   ' } as NodeJS.ProcessEnv, 500);
+    expect(key).toContain(os.hostname());
+    expect(key).not.toContain('   ');
+  });
+
+  it('不同启动时刻 / 不同部署标识会得到不同 key', () => {
+    expect(currentEnvKey({}, 100)).not.toBe(currentEnvKey({}, 200));
+    expect(currentEnvKey({ INSTANCE_ENV_KEY: 'a' } as NodeJS.ProcessEnv)).not.toBe(
+      currentEnvKey({ INSTANCE_ENV_KEY: 'b' } as NodeJS.ProcessEnv),
+    );
   });
 });
