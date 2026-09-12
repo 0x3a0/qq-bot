@@ -12,6 +12,7 @@
  * - 富媒体消息需先上传拿到 file_info，再用 msg_type=7 发送。
  */
 import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { describeError, type Logger } from '../logger.js';
 import { formatImageTitle, formatQuoteTime } from '../market/format.js';
@@ -58,7 +59,7 @@ export interface GroupMessage {
 }
 
 export interface MessageHandlingDeps {
-  api: Pick<QqApiClient, 'sendGroupText' | 'sendGroupImage' | 'uploadGroupFileFromPath'>;
+  api: Pick<QqApiClient, 'sendGroupText' | 'sendGroupImage' | 'uploadGroupFileFromBuffer'>;
   /** 板块资金流数据源（行业 / 概念） */
   fundflow: Pick<FundFlowProvider, 'getSectorFundFlow'>;
   logger: Logger;
@@ -268,7 +269,7 @@ export class GroupMessageHandler {
       return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
     }
 
-    let filePath: string;
+    let png: Buffer;
     try {
       const renderer = this.deps.renderer ?? renderPng;
       const image = renderer({
@@ -284,16 +285,19 @@ export class GroupMessageHandler {
         metricLabel: METRIC_FOOTER_LABEL,
         fontFiles: this.deps.fontFiles,
       });
-      filePath = await this.saveDebugImage(`${message.messageId}-${kind}`, image.png);
+      png = image.png;
+      // 调试图仅用于排查，落盘失败不影响发送
+      await this.saveDebugImage(`${message.messageId}-${kind}`, png);
     } catch (error) {
       logger.error(`${kindLabel}图片渲染失败：${describeError(error)}`);
       return { sent: false, reason: 'send-failed', error: describeError(error).split('\n')[0] ?? '未知错误' };
     }
 
     try {
-      const uploaded = await api.uploadGroupFileFromPath({
+      // 直接从内存上传：不经过临时文件，避免并发/多进程下读到别人的图
+      const uploaded = await api.uploadGroupFileFromBuffer({
         groupOpenid: message.groupOpenid,
-        filePath,
+        buffer: png,
         fileName: `fundflow-${kind}-${Date.now()}.png`,
         fileType: 1,
       });
@@ -369,11 +373,15 @@ export class GroupMessageHandler {
     return error instanceof QqApiError && error.code === ERR_MESSAGE_DEDUPED;
   }
 
-  /** 落盘调试图片，便于排查渲染问题；返回文件路径。 */
+  /**
+   * 落盘调试图片，便于排查渲染问题。
+   * 文件名带 pid 与随机串：并发任务或多个进程同时运行时不会互相覆盖。
+   */
   private async saveDebugImage(tag: string, png: Buffer): Promise<string> {
     const dir = this.deps.imageOutputDir ?? join(process.cwd(), '.tmp-probe', 'images');
     await mkdir(dir, { recursive: true });
-    const filePath = join(dir, `market-${sanitize(tag)}-${Date.now()}.png`);
+    const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
+    const filePath = join(dir, `market-${sanitize(tag)}-${Date.now()}-${suffix}.png`);
     await writeFile(filePath, png);
     this.logger.debug(`调试图片已保存：${filePath}`);
     return filePath;

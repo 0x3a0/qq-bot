@@ -60,7 +60,7 @@ function createHarness(overrides: Partial<MessageHandlingDeps> = {}): {
   const calls: RecordedCalls = { uploads: [], images: [], texts: [], order: [] };
 
   const api = {
-    uploadGroupFileFromPath: vi.fn(async (params: { fileName?: string }) => {
+    uploadGroupFileFromBuffer: vi.fn(async (params: { fileName?: string }) => {
       calls.uploads.push(params);
       calls.order.push(`upload:${params.fileName ?? ''}`);
       return { fileInfo: `FILE_INFO_${params.fileName ?? ''}` };
@@ -181,7 +181,7 @@ describe('GroupMessageHandler', () => {
         };
       }) as unknown as MessageHandlingDeps['renderer'],
       api: {
-        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        uploadGroupFileFromBuffer: vi.fn(async () => ({ fileInfo: 'F' })),
         sendGroupImage: vi.fn(async (params: { fileInfo: string; msgSeq: number; msgId: string }) => {
           events.push(`send@${params.msgSeq}`);
           return {};
@@ -302,7 +302,7 @@ describe('GroupMessageHandler', () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       api: {
-        uploadGroupFileFromPath: vi.fn(async (params: { fileName?: string }) => {
+        uploadGroupFileFromBuffer: vi.fn(async (params: { fileName?: string }) => {
           calls.uploads.push(params);
           return { fileInfo: `F_${params.fileName ?? ''}` };
         }),
@@ -328,7 +328,7 @@ describe('GroupMessageHandler', () => {
     const { handler } = createHarness({
       imageOutputDir: tempDir,
       api: {
-        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        uploadGroupFileFromBuffer: vi.fn(async () => ({ fileInfo: 'F' })),
         sendGroupImage,
         sendGroupText: vi.fn(async () => ({})),
       } as unknown as MessageHandlingDeps['api'],
@@ -350,7 +350,7 @@ describe('GroupMessageHandler', () => {
     const { handler, calls } = createHarness({
       imageOutputDir: tempDir,
       api: {
-        uploadGroupFileFromPath: uploadMock,
+        uploadGroupFileFromBuffer: uploadMock,
         sendGroupImage: vi.fn(async (params: { fileInfo: string; msgSeq: number; msgId: string }) => {
           calls.images.push(params);
           return {};
@@ -371,7 +371,7 @@ describe('GroupMessageHandler', () => {
     const { handler } = createHarness({
       imageOutputDir: tempDir,
       api: {
-        uploadGroupFileFromPath: vi.fn(async () => ({ fileInfo: 'F' })),
+        uploadGroupFileFromBuffer: vi.fn(async () => ({ fileInfo: 'F' })),
         sendGroupImage: vi.fn(async () => ({})),
         sendGroupText: vi.fn(async () => {
           throw new Error('发送失败');

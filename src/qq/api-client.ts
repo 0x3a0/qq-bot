@@ -6,7 +6,6 @@
  * 文档：https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html
  */
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import type { Logger } from '../logger.js';
 import type { TokenManager } from './token.js';
@@ -332,18 +331,20 @@ export class QqApiClient {
   }
 
   /**
-   * 分片上传本地文件到群聊，返回 file_info。
-   * 用于本地开发：QQ 平台无法访问 localhost，URL 上传不可用时的默认方案。
+   * 分片上传内存中的图片/文件到群聊，返回 file_info。
+   *
+   * 直接吃 Buffer 而不是文件路径：QQ 平台无法访问 localhost，URL 上传不可用，
+   * 分片上传是本地开发的默认方案。走内存既省一次磁盘读写，
+   * 也避免「多个进程/并发任务写同一个临时文件导致读到别人的图」这类串图问题。
    */
-  async uploadGroupFileFromPath(params: {
+  async uploadGroupFileFromBuffer(params: {
     groupOpenid: string;
-    filePath: string;
-    fileName?: string;
+    buffer: Buffer;
+    fileName: string;
     fileType?: number;
   }): Promise<UploadedFile> {
-    const buffer = await readFile(params.filePath);
-    const fileSize = (await stat(params.filePath)).size;
-    const fileName = params.fileName ?? params.filePath.split(/[\\/]/).pop() ?? 'image.png';
+    const { buffer, fileName } = params;
+    const fileSize = buffer.length;
     const fileType = params.fileType ?? 1;
 
     const prepare = await this.uploadPrepare({
@@ -418,17 +419,6 @@ export class QqApiClient {
     });
     this.logger.info(`分片上传完成：${fileName}，file_info 长度 ${uploaded.fileInfo.length}`);
     return uploaded;
-  }
-
-  /**
-   * 优先分片上传本地文件；失败时抛出异常由上层决定兜底。
-   */
-  async uploadGroupImage(params: {
-    groupOpenid: string;
-    filePath: string;
-    fileName?: string;
-  }): Promise<UploadedFile> {
-    return this.uploadGroupFileFromPath({ ...params, fileType: 1 });
   }
 }
 

@@ -9,6 +9,7 @@
  */
 import { loadConfig } from './config.js';
 import { loadDotEnv } from './env.js';
+import { acquireLock, releaseLock } from './instance-lock.js';
 import { createLogger, describeError, setLogLevel } from './logger.js';
 import { GroupMessageHandler } from './commands/bot.js';
 import { EastmoneyFundFlowProvider } from './market/fundflow.js';
@@ -28,6 +29,23 @@ async function main(): Promise<void> {
   const logger = createLogger('app');
   logger.info(`QQ Bot MVP 启动中（env=${config.qqEnv}，apiBase=${config.apiBase}）`);
   logger.info(env.loaded ? `已加载环境变量文件：${env.path}` : '未找到 .env，使用进程内环境变量');
+
+  // 单实例保护：两个进程连同一机器人时，平台会把同一条群消息投递给两个连接，
+  // 于是每个指令被回复两遍。这里在连接前直接拒绝启动。
+  const lockPath = join(process.cwd(), '.tmp-probe', 'bot.lock');
+  const lock = acquireLock(lockPath, logger);
+  if (!lock.ok) {
+    logger.error(
+      `已有另一个机器人在运行（pid=${lock.holder.pid}，启动于 ${lock.holder.startedAt}），` +
+        '拒绝启动以免同一消息被回复两次。',
+    );
+    logger.error(`如果确认该进程已退出，可删除锁文件后重试：${lockPath}`);
+    process.exitCode = 1;
+    return;
+  }
+  const releaseLockOnExit = (): void => releaseLock(lockPath, logger);
+  process.on('exit', releaseLockOnExit);
+
   if (!config.logEvents) {
     logger.info('提示：排查 @ 事件时可设置 LOG_EVENTS=true 打印全部事件');
   }
