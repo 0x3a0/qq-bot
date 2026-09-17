@@ -1,0 +1,25 @@
+{
+  "name": "qq-market-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --dns-result-order=ipv4first --env-file-if-exists=.env dist/main.js",
+    "dev": "node --dns-result-order=ipv4first --env-file-if-exists=.env --watch --import tsx src/main.ts",
+    "test": "npm run build && node --test tests/**/*.test.js"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

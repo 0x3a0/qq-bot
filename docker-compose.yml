@@ -1,0 +1,12 @@
+services:
+  qq-market-bot:
+    image: ${QQ_MARKET_BOT_IMAGE:-ghcr.io/0x3a0/qq-bot:latest}
+    container_name: qq-market-bot
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - qq-market-network
+
+networks:
+  qq-market-network:
+    external: true

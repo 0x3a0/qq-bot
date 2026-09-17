@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+.pnpm-store
+tests
+docs
+demo/market-flow-card/index.png
+ssh.pem

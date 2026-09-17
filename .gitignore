@@ -1,1 +1,4 @@
-ssh.pem
+node_modules/
+dist/
+.env
+.pnpm-store/

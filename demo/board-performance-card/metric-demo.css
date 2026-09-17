@@ -1,0 +1,27 @@
+:root { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #252c37; background: #f7f8fb; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1160px; margin: auto; padding: 40px 32px 26px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; gap: 16px; }
+.eyebrow { margin: 0 0 10px; font-size: 10px; letter-spacing: 2px; color: #89919e; }
+h1 { font-size: 25px; margin: 0; font-weight: 650; letter-spacing: -.5px; }
+h1 span { margin-left: 14px; font-size: 14px; font-weight: 400; color: #8b929d; letter-spacing: 0; }
+.subtitle { font-size: 12px; color: #89919e; margin: 9px 0 0; }
+.demo-label { font-size: 11px; color: #7a8391; border: 1px solid #e6e9ee; border-radius: 6px; padding: 5px 9px; white-space: nowrap; }
+ol { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; padding: 0; margin: 0; list-style: none; }
+.metric-card { min-width: 0; background: #fff; border: 1px solid #e8ebef; border-radius: 16px; padding: 20px 18px 18px; box-shadow: 0 2px 3px rgb(32 42 55 / 3%); }
+h2 { font-size: 15px; font-weight: 400; margin: 0 0 12px; line-height: 1.5; }
+.metric-value { font-family: Arial, sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -1px; line-height: 1.1; margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+.metric-value.up { color: #cf453e; }
+.metric-value.down { color: #16805b; }
+.metric-value.flat { color: #7f8994; }
+.stock-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.stock-name { font-size: 12px; color: #596271; white-space: nowrap; }
+.badge { font-family: Arial, sans-serif; padding: 4px 6px; border-radius: 4px; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.badge.up { color: #cf453e; background: #fff0ee; }
+.badge.down { color: #16805b; background: #edf9f2; }
+.badge.flat { color: #7f8994; background: #f0f2f5; }
+footer { display: flex; justify-content: space-between; margin-top: 23px; font-size: 11px; color: #9ba2ad; }
+@media(max-width: 900px) { ol { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media(max-width: 700px) { main { padding: 25px 18px; } ol { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .metric-card { padding: 18px 14px; } .metric-value { font-size: 29px; } .eyebrow { display: none; } }
+@media(max-width: 370px) { ol { grid-template-columns: 1fr; } h1 { font-size: 21px; } }

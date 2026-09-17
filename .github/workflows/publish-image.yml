@@ -1,0 +1,26 @@
+name: Publish container image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push image
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/qq-bot
+        run: |
+          docker build --tag "${IMAGE_NAME}:latest" --tag "${IMAGE_NAME}:${GITHUB_SHA}" .
+          docker push "${IMAGE_NAME}:latest"
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
