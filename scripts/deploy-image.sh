@@ -46,7 +46,6 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 require_configured_value ONEBOT_WS_URL
-require_configured_value THS_API_KEY
 
 if ! docker network inspect "${NETWORK_NAME}" >/dev/null; then
   printf 'Required Docker network does not exist: %s\n' "${NETWORK_NAME}" >&2

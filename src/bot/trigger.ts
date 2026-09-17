@@ -17,10 +17,14 @@ export function commandText(event: GroupMessageEvent): string {
     .replace(/\s+/gu, "");
 }
 
-export function isBoardPerformanceCommand(event: GroupMessageEvent, botQq?: string): boolean {
-  return isMentionedBoardCommand(event, "板块涨跌", botQq);
+export function isAShareCommand(event: GroupMessageEvent, botQq?: string): boolean {
+  return isMentionedCommand(event, "a股", botQq);
 }
 
-function isMentionedBoardCommand(event: GroupMessageEvent, command: string, botQq?: string): boolean {
-  return event.post_type === "message" && event.message_type === "group" && isMentioned(event, botQq) && commandText(event) === command;
+export function isUSShareCommand(event: GroupMessageEvent, botQq?: string): boolean {
+  return isMentionedCommand(event, "美股", botQq);
+}
+
+function isMentionedCommand(event: GroupMessageEvent, command: string, botQq?: string): boolean {
+  return event.post_type === "message" && event.message_type === "group" && isMentioned(event, botQq) && commandText(event).toLocaleLowerCase() === command;
 }

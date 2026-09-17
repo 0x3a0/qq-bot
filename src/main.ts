@@ -1,14 +1,13 @@
 import { loadConfig } from "./config.js";
-import { isBoardPerformanceCommand } from "./bot/trigger.js";
-import { replyWithBoardPerformanceCards } from "./bot/board-performance-reply.js";
-import { ThsBoardPerformanceProvider } from "./market/ths-board-performance-provider.js";
+import { isAShareCommand, isUSShareCommand } from "./bot/trigger.js";
+import { replyWithAShareScreenshots } from "./bot/a-share-reply.js";
+import { replyWithUSShareScreenshots } from "./bot/us-share-reply.js";
+import {
+  captureBaiduFinanceScreenshots,
+  captureBaiduFinanceUSScreenshots
+} from "./capture/baidu-finance-screenshots.js";
 import { OneBotClient } from "./onebot/client.js";
 import type { GroupMessageEvent } from "./onebot/types.js";
-import {
-  closeBoardPerformanceCardRenderer,
-  renderBoardPerformanceCards,
-  warmBoardPerformanceCardRenderer
-} from "./renderer/board-performance-card.js";
 
 const config = loadConfig();
 const client = new OneBotClient({
@@ -19,23 +18,17 @@ const client = new OneBotClient({
   requestTimeoutMs: config.requestTimeoutMs,
   logger: console
 });
-const boardPerformanceDataProvider = new ThsBoardPerformanceProvider({
-  apiKey: config.thsApiKey,
-  requestTimeoutMs: config.marketRequestTimeoutMs,
-  retries: config.marketRequestRetries,
-  snapshotBatchSize: config.thsSnapshotBatchSize
-});
-
-void warmBoardPerformanceCardRenderer().catch((error: unknown) => {
-  console.error("Board performance renderer warmup failed", error);
-});
-
 client.onEvent((event) => {
   const message = event as unknown as GroupMessageEvent;
-  if (isBoardPerformanceCommand(message, config.botQq)) {
-    void replyWithBoardPerformanceCards(message, {
-      boardPerformanceDataProvider,
-      renderBoardPerformanceCards,
+  if (isAShareCommand(message, config.botQq)) {
+    void replyWithAShareScreenshots(message, {
+      captureScreenshots: captureBaiduFinanceScreenshots,
+      sendGroupMessage: (groupId, content) => client.sendGroupMessage(groupId, content),
+      logger: console
+    });
+  } else if (isUSShareCommand(message, config.botQq)) {
+    void replyWithUSShareScreenshots(message, {
+      captureScreenshots: captureBaiduFinanceUSScreenshots,
       sendGroupMessage: (groupId, content) => client.sendGroupMessage(groupId, content),
       logger: console
     });
@@ -46,7 +39,7 @@ void client.connect().catch((error: unknown) => console.error("Initial OneBot co
 
 const shutdown = (): void => {
   client.close();
-  void closeBoardPerformanceCardRenderer().finally(() => process.exit(0));
+  process.exit(0);
 };
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);

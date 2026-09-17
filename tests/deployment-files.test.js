@@ -10,18 +10,19 @@ function workspaceFile(relativePath) {
 test("deployment compose file pulls a published image and keeps runtime secrets external", () => {
   const compose = readFileSync(workspaceFile("docker-compose.yml"), "utf8");
   const dockerignore = readFileSync(workspaceFile(".dockerignore"), "utf8");
+  const dockerfile = readFileSync(workspaceFile("Dockerfile"), "utf8");
 
   assert.match(compose, /image: \$\{QQ_MARKET_BOT_IMAGE:-ghcr\.io\/0x3a0\/qq-bot:latest\}/);
   assert.doesNotMatch(compose, /^\s*build:/m);
   assert.match(compose, /env_file: \.env/);
   assert.match(dockerignore, /^\.env$/m);
+  assert.match(dockerfile, /COPY demo \.\/demo/);
 });
 
 test("deployment script validates required configuration and restores a failed update", () => {
   const script = readFileSync(workspaceFile("scripts/deploy-image.sh"), "utf8");
 
   assert.match(script, /require_configured_value ONEBOT_WS_URL/);
-  assert.match(script, /require_configured_value THS_API_KEY/);
   assert.match(script, /docker pull "\$\{IMAGE_REF\}"/);
   assert.match(script, /if ! run_container "\$\{IMAGE_REF\}"/);
   assert.match(script, /Restoring the previous image/);
